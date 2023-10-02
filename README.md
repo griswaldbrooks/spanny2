@@ -14,7 +14,7 @@ docker compose -f compose.dev.yml run development
 ```
 Build the repository in the container
 ```shell
-username@spanny-dev:~/ws$ cmake -S src/filter/ -B build
+username@spanny-dev:~/ws$ cmake -S src/spanny/ -B build
 username@spanny-dev:~/ws$ cmake --build build
 ```
 

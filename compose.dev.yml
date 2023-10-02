@@ -21,6 +21,7 @@ services:
     network_mode: host
     privileged: true
     volumes:
+      - /dev:/dev
       - ~/.ssh:${HOME}/.ssh:ro
       - ~/.gitconfig:${HOME}/.gitconfig:ro
       - ${PWD}:${HOME}/ws/src/${REPO}
