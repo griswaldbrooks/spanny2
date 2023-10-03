@@ -10,7 +10,7 @@ endif()
 add_executable(spanny
   src/main.cpp
 )
-target_link_libraries(spanny PRIVATE serial mdspan)
+target_link_libraries(spanny PRIVATE serial mdspan expected)
 target_include_directories(spanny INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_compile_features(spanny INTERFACE cxx_std_20)
 
