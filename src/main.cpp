@@ -38,21 +38,21 @@ template <int nbins>
 struct robot_command_accessor {
   using element_type = tl::expected<bin_state, std::string>;
   using reference = tl::expected<bin_state, std::string> const&;
-  using data_handle_type = tl::expected<bin_state, std::string>*;
+  using data_handle_type = robot_arm*;
 
   element_type const no_bin = tl::make_unexpected("Invalid bin index");
+  mutable element_type recent_ = tl::make_unexpected("Bin has not been accessed");
 
-  reference access(data_handle_type ptr, std::ptrdiff_t offset) const {
+  reference access(data_handle_type arm, std::ptrdiff_t offset) const {
     if (offset < 0 || offset >= nbins) {
       return no_bin;
     }
     try {
-      auto const arm = robot_arm{};
-      ptr[offset] = arm.is_bin_occupied(static_cast<int>(offset));
+      recent_ = arm->is_bin_occupied(static_cast<int>(offset));
     } catch (std::exception const& e) {
-      ptr[offset] = tl::make_unexpected(std::string{"Error opening serial port"});
+      recent_ = tl::make_unexpected(std::string{"Error opening serial port"});
     }
-    return ptr[offset];
+    return recent_;
   }
 };
 
@@ -77,8 +77,8 @@ auto shrug = [](std::string const& msg) -> void {
 };
 
 int main(int, char **) {
-  auto bin_array = std::array<tl::expected<bin_state, std::string>, 4>{};
-  auto bins = bin_view(bin_array.data());
+  auto arm = robot_arm{};
+  auto bins = bin_view(&arm, {}, robot_command_accessor<4>{});
   for (auto ndx = 0; ndx < 4; ++ndx) {
     std::cout << "Bin " << ndx << " is ";
     bins(ndx).and_then(print_state).or_else(shrug);
