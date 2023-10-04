@@ -12,6 +12,12 @@ enum struct bin_state {
 };
 
 struct robot_arm {
+  robot_arm(
+    std::string port,
+    uint32_t baudrate,
+    serial::Timeout timeout = serial::Timeout::simpleTimeout(10000))
+    : serial_(std::move(port), baudrate, std::move(timeout)) {}
+
   tl::expected<bin_state, std::string> is_bin_occupied(int bin) const {
     if (!serial_.isOpen()) {
       return tl::make_unexpected("Error opening serial port");
@@ -30,17 +36,17 @@ struct robot_arm {
     }
   }
   
-  mutable serial::Serial serial_ = serial::Serial("/dev/ttyACM1", 9600, serial::Timeout::simpleTimeout(10000));
+  mutable serial::Serial serial_; 
 };
 
 
 template <int nbins>
-struct robot_command_accessor {
+struct bin_checker {
   using element_type = tl::expected<bin_state, std::string>;
   using reference = tl::expected<bin_state, std::string> const&;
   using data_handle_type = robot_arm*;
 
-  element_type const no_bin = tl::make_unexpected("Invalid bin index");
+  inline static element_type const no_bin = tl::make_unexpected("Invalid bin index");
   mutable element_type recent_ = tl::make_unexpected("Bin has not been accessed");
 
   reference access(data_handle_type arm, std::ptrdiff_t offset) const {
@@ -57,7 +63,7 @@ struct robot_command_accessor {
 };
 
 using ext_t = stdex::extents<uint32_t, 4>;
-using acc_t = robot_command_accessor<4>;
+using acc_t = bin_checker<4>;
 using bin_view = stdex::mdspan<bin_state, ext_t, stdex::layout_right, acc_t>;
 
 auto print_state = [](bin_state const& state) -> tl::expected<void, std::string> {
@@ -77,8 +83,8 @@ auto shrug = [](std::string const& msg) -> void {
 };
 
 int main(int, char **) {
-  auto arm = robot_arm{};
-  auto bins = bin_view(&arm, {}, robot_command_accessor<4>{});
+  auto arm = robot_arm{"/dev/ttyACM1", 9600};
+  auto bins = bin_view(&arm, {}, bin_checker<4>{});
   for (auto ndx = 0; ndx < 4; ++ndx) {
     std::cout << "Bin " << ndx << " is ";
     bins(ndx).and_then(print_state).or_else(shrug);
