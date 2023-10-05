@@ -1,6 +1,6 @@
 # spanny
 Robot arm project for lightening talk on mdspan.
-Presented at CppCon 2023.
+Presented as a ligthening talk at CppCon 2023.
 
 # Development Container
 Build a new development image
@@ -18,7 +18,7 @@ username@spanny-dev:~/ws$ cmake -S src/spanny/ -B build
 username@spanny-dev:~/ws$ cmake --build build
 ```
 
-# Test
+# Run
 ```shell
-username@spanny-dev:~/ws$ ctest --test-dir build
+username@spanny-dev:~/ws$ ./build/spanny
 ```

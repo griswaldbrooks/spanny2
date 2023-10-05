@@ -5,7 +5,6 @@
 #include <string>
 #include "serial/serial.h"
 #include "mdspan.hpp"
-#include "expected.hpp"
 
 namespace stdex = std::experimental;
 
@@ -74,33 +73,20 @@ using bin_view = stdex::mdspan<bin_state,
   robot_command_accessor
 >;
 
-auto print_state = [](bin_state const& state) -> tl::expected<void, std::string> {
-  switch (state) {
-    case bin_state::OCCUPIED:
-      std::cout << "OCCUPIED";
-      break;
-    case bin_state::EMPTY:
-      std::cout << "EMPTY";
-      break;
-  }
-  return {};
-};
-
-auto shrug = [](std::string const& msg) -> void {
-  std::cout << "¯\\_(ツ)_/¯ " << msg;
-};
-
 int main() {
   auto arm = robot_arm{"/dev/ttyACM0", 9600};
   auto bins = bin_view(&arm);
-  for (auto ndx = 0; ndx < 6; ++ndx) {
-    std::cout << "Bin " << ndx << " is ";
-    try {
-      print_state(bins(ndx).get());
-    } catch (std::exception const& e) {
-      shrug(e.what());
+  while(true) {
+    for (auto ndx = 0; ndx < bins.extent(0); ++ndx) {
+      std::cout << "Bin " << ndx << " is ";
+      try {
+        print_state(bins(ndx).get());
+      } catch (std::exception const& e) {
+        shrug(e.what());
+      }
+      std::cout << "\n";
     }
-    std::cout << "\n";
+    std::cout << "====================\n";
   }
   return 0;
 }
