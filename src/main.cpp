@@ -83,7 +83,7 @@ auto shrug = [](std::string const& msg) -> void {
 };
 
 int main(int, char **) {
-  auto arm = robot_arm{"/dev/ttyACM1", 9600};
+  auto arm = robot_arm{"/dev/ttyACM0", 9600};
   auto bins = bin_view(&arm, {}, bin_checker<4>{});
   for (auto ndx = 0; ndx < 4; ++ndx) {
     std::cout << "Bin " << ndx << " is ";
