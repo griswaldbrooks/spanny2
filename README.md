@@ -1,6 +1,6 @@
 # spanny
 Robot arm project for lightening talk on mdspan.
-Presented at CppCon 2023.
+Presented as a ligthening talk at CppCon 2023.
 
 # Development Container
 Build a new development image
