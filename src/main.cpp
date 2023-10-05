@@ -62,8 +62,8 @@ struct bin_checker {
   }
 };
 
-using ext_t = stdex::extents<uint32_t, 4>;
-using acc_t = bin_checker<4>;
+using ext_t = stdex::extents<uint32_t, 2, 3>;
+using acc_t = bin_checker<6>;
 using bin_view = stdex::mdspan<bin_state, ext_t, stdex::layout_right, acc_t>;
 
 auto print_state = [](bin_state const& state) -> tl::expected<void, std::string> {
@@ -84,11 +84,16 @@ auto shrug = [](std::string const& msg) -> void {
 
 int main(int, char **) {
   auto arm = robot_arm{"/dev/ttyACM0", 9600};
-  auto bins = bin_view(&arm, {}, bin_checker<4>{});
-  for (auto ndx = 0; ndx < 4; ++ndx) {
-    std::cout << "Bin " << ndx << " is ";
-    bins(ndx).and_then(print_state).or_else(shrug);
-    std::cout << "\n";
+  auto bins = bin_view(&arm, {}, bin_checker<6>{});
+  while(true) {
+  for (std::size_t i = 0; i != bins.extent(0); ++i) {
+    for (std::size_t j = 0; j != bins.extent(1); ++j) {
+      std::cout << "Bin " << i << ", " << j << " is ";
+      bins(i, j).and_then(print_state).or_else(shrug);
+      std::cout << "\n";
+    }
+  }
+  std::cout << "====================\n";
   }
   return 0;
 }
