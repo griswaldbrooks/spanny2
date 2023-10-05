@@ -40,12 +40,13 @@ struct bounds_checked_layout_policy {
   struct mapping : stdex::layout_right::mapping<Extents> {
     using base_t = stdex::layout_right::mapping<Extents>;
     using base_t::base_t;
-    static_assert(Extents::rank() == 1, "Only supporting 1-D mappings for brevity");
-    std::ptrdiff_t operator()(auto idx) const {
-      if (idx < 0 || idx > this->extents().extent(0)) {
-        throw std::out_of_range("Invalid bin index");
-      }
-      return idx;
+    std::ptrdiff_t operator()(auto... idxs) const {
+      [&]<size_t... Is>(std::index_sequence<Is...>) {
+        if (((idxs < 0 || idxs > this->extents().extent(Is)) || ...)) {
+          throw std::out_of_range("Invalid bin index");
+        }
+      }(std::make_index_sequence<sizeof...(idxs)>{});
+      return this->base_t::operator()(idxs...);
     }
   };
 };
@@ -65,8 +66,8 @@ struct robot_command_accessor {
 };
 
 using bin_view = stdex::mdspan<bin_state, 
-  // We know statically that there are 4 bins
-  stdex::extents<uint32_t, 6>,
+  // We're treating our 6 bins as a 3x2 matrix
+  stdex::extents<uint32_t, 3, 2>,
   // Our layout should do bounds-checking
   bounds_checked_layout_policy,
   // Our accessor should tell the robot to asynchronously access the bin
@@ -77,22 +78,24 @@ int main() {
   auto arm = robot_arm{"/dev/ttyACM0", 9600};
   auto bins = bin_view(&arm);
   while(true) {
-    for (auto ndx = 0u; ndx < bins.extent(0); ++ndx) {
-      std::cout << "Bin " << ndx << " is ";
-      try {
-        auto state = bins(ndx).get();
-        switch (state) {
-          case bin_state::OCCUPIED:
-            std::cout << "OCCUPIED";
-            break;
-          case bin_state::EMPTY:
-            std::cout << "EMPTY";
-            break;
+    for (auto i = 0u; i < bins.extent(0); ++i) {
+      for (auto j = 0u; j < bins.extent(1); ++j) {
+        std::cout << "Bin " << i << ", " << j << " is ";
+        try {
+          auto state = bins(i, j).get();
+          switch (state) {
+            case bin_state::OCCUPIED:
+              std::cout << "OCCUPIED";
+              break;
+            case bin_state::EMPTY:
+              std::cout << "EMPTY";
+              break;
+          }
+        } catch (std::exception const& e) {
+          std::cout << "¯\\_(ツ)_/¯ " << e.what();
         }
-      } catch (std::exception const& e) {
-        std::cout << "¯\\_(ツ)_/¯ " << e.what();
+        std::cout << "\n";
       }
-      std::cout << "\n";
     }
     std::cout << "====================\n";
   }
