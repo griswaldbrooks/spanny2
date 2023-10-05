@@ -77,12 +77,20 @@ int main() {
   auto arm = robot_arm{"/dev/ttyACM0", 9600};
   auto bins = bin_view(&arm);
   while(true) {
-    for (auto ndx = 0; ndx < bins.extent(0); ++ndx) {
+    for (auto ndx = 0u; ndx < bins.extent(0); ++ndx) {
       std::cout << "Bin " << ndx << " is ";
       try {
-        print_state(bins(ndx).get());
+        auto state = bins(ndx).get();
+        switch (state) {
+          case bin_state::OCCUPIED:
+            std::cout << "OCCUPIED";
+            break;
+          case bin_state::EMPTY:
+            std::cout << "EMPTY";
+            break;
+        }
       } catch (std::exception const& e) {
-        shrug(e.what());
+        std::cout << "¯\\_(ツ)_/¯ " << e.what();
       }
       std::cout << "\n";
     }
@@ -90,4 +98,3 @@ int main() {
   }
   return 0;
 }
-
