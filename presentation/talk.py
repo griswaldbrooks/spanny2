@@ -70,7 +70,7 @@ for (std::size_t i = 0; i != occupancy_map.extent(0); i++) {
         occupancy_map[i, j] = get_occupancy_from_laser_scan(...)
     }
 }
-// TODO: Add turtlebot map
+// TODO: Add turtlebot map with attribution
 """,
     )
     slide.set_style("footer", elsie.TextStyle(color="black", size=32, align="right"))

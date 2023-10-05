@@ -18,7 +18,7 @@ username@spanny-dev:~/ws$ cmake -S src/spanny/ -B build
 username@spanny-dev:~/ws$ cmake --build build
 ```
 
-# Test
+# Run
 ```shell
-username@spanny-dev:~/ws$ ctest --test-dir build
+username@spanny-dev:~/ws$ ./build/spanny
 ```

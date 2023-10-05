@@ -1,8 +1,2 @@
-doc/html
-doc/manifest.yaml
-*.a
-Makefile
-CMakeCache.txt
-CMakeFiles/
-filter_tests
+**/elsie-cache/
 build
