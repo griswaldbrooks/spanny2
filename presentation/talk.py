@@ -135,7 +135,7 @@ struct bin_checker {
 
 
 @slides.slide(debug_boxes=False)
-def async_implementation(slide):
+def sync_implementation(slide):
     code_slide(
         slide,
         "Getting Started",

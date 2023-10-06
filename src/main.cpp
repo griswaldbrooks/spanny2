@@ -3,15 +3,32 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include "serial/serial.h"
 #include "mdspan.hpp"
 
 namespace stdex = std::experimental;
 
-enum struct bin_state {
+enum struct bin_occupancy {
   OCCUPIED,
   EMPTY
 };
+
+struct bin_coordinate {
+  int x, y;
+};
+
+struct bin_state {
+  bin_occupancy occupancy;
+  bin_coordinate coordinate;
+};
+
+
+bin_coordinate offset_to_coord(int offset, int width = 3) {
+    int const row = offset / width;
+    int const col = offset % width;
+    return {row, col};
+}
 
 struct robot_arm {
   robot_arm(
@@ -20,16 +37,16 @@ struct robot_arm {
     serial::Timeout timeout = serial::Timeout::simpleTimeout(10000))
     : serial_(std::move(port), baudrate, std::move(timeout)) {}
 
-  bin_state is_bin_occupied(int bin) {
+  bin_occupancy is_bin_occupied(int bin) {
     if (!serial_.isOpen()) {
       throw std::runtime_error("Error opening serial port");
     }
     serial_.write(std::to_string(bin));
     auto const result = std::stoi(serial_.readline());
     if (result == 1) {
-      return bin_state::OCCUPIED;
+      return bin_occupancy::OCCUPIED;
     } 
-    return bin_state::EMPTY;
+    return bin_occupancy::EMPTY;
   }
   
   serial::Serial serial_;
@@ -51,7 +68,7 @@ struct bounds_checked_layout_policy {
   };
 };
 
-struct robot_command_accessor {
+struct bin_checker {
   using element_type = bin_state;
   using reference = std::future<bin_state>;
   using data_handle_type = robot_arm*;
@@ -60,7 +77,7 @@ struct robot_command_accessor {
     // We know ptr will be valid asynchronously because we construct it on the stack
     // of main. In real code we might want to use a shared_ptr or something
     return std::async([=]{
-      return ptr->is_bin_occupied(static_cast<int>(offset));
+      return bin_state{ptr->is_bin_occupied(static_cast<int>(offset)), offset_to_coord(static_cast<int>(offset))};
     });
   }
 };
@@ -71,33 +88,42 @@ using bin_view = stdex::mdspan<bin_state,
   // Our layout should do bounds-checking
   bounds_checked_layout_policy,
   // Our accessor should tell the robot to asynchronously access the bin
-  robot_command_accessor
+  bin_checker
 >;
+
+auto print_state = [](bin_state const& state) {
+  std::cout << "Bin at (" << state.coordinate.x << ", " << state.coordinate.y << ") is ";
+  switch (state.occupancy) {
+    case bin_occupancy::OCCUPIED:
+      std::cout << "OCCUPIED";
+      break;
+    case bin_occupancy::EMPTY:
+      std::cout << "EMPTY";
+      break;
+  }
+  std::cout << "\n";
+};
 
 int main() {
   auto arm = robot_arm{"/dev/ttyACM0", 9600};
   auto bins = bin_view(&arm);
   while(true) {
+    std::vector<std::future<bin_state>> futures;
     for (auto i = 0u; i < bins.extent(0); ++i) {
       for (auto j = 0u; j < bins.extent(1); ++j) {
-        std::cout << "Bin " << i << ", " << j << " is ";
-        try {
-          auto state = bins(i, j).get();
-          switch (state) {
-            case bin_state::OCCUPIED:
-              std::cout << "OCCUPIED";
-              break;
-            case bin_state::EMPTY:
-              std::cout << "EMPTY";
-              break;
-          }
-        } catch (std::exception const& e) {
-          std::cout << "¯\\_(ツ)_/¯ " << e.what();
-        }
-        std::cout << "\n";
+          futures.push_back(bins(i, j));
       }
     }
-    std::cout << "====================\n";
+    // std::cout << "waiting for results...\n";
+    for (auto const& future : futures) {
+        future.wait();
+    }
+    // std::cout << "results:\n";
+    for (auto& future : futures) {
+        print_state(future.get());
+    }
+    std::cout << "====================" << std::endl;
+
   }
   return 0;
 }
