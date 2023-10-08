@@ -114,16 +114,13 @@ int main() {
           futures.push_back(bins(i, j));
       }
     }
-    // std::cout << "waiting for results...\n";
     for (auto const& future : futures) {
         future.wait();
     }
-    // std::cout << "results:\n";
     for (auto& future : futures) {
         print_state(future.get());
     }
     std::cout << "====================" << std::endl;
-
   }
   return 0;
 }
