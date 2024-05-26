@@ -17,7 +17,7 @@ namespace tooly {
 template <typename T, typename U, typename F, size_t window_size>
 auto transform_window(T const * begin, T const * end, F op) {
   // Check that there are at least window_size elements in the collection
-  if constexpr window_size > std::distance(begin, end) {
+  if constexpr (window_size > std::distance(begin, end)) {
     // don't compile?
   } 
   // Should we take a single span instead of two pointers?
@@ -29,8 +29,8 @@ auto transform_window(T const * begin, T const * end, F op) {
   while (begin != std::prev(end)) {
     // requires a function that can return a range of elements from
     // current to window_size only known at compile time
-    output.push_back(std::apply(op, std::range_n(begin, window_size)));
-    begin = std::next(begin);
+    // output.push_back(std::apply(op, std::range_n(begin, window_size)));
+    // begin = std::next(begin);
   } 
   return output;
 }
