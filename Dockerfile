@@ -14,6 +14,13 @@ RUN --mount=type=cache,target=/var/cache/apt,id=apt \
   wget                   \
   && rm -rf /var/lib/apt/lists/*
 
+# Get library dependencies
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,id=apt \
+  apt-get update -y && apt-get install -q -y --no-install-recommends \
+  libopencv-dev        \
+  && rm -rf /var/lib/apt/lists/*
+
 FROM upstream AS development
 
 ARG UID
@@ -31,6 +38,7 @@ RUN if [ -z "$USER" ]; then echo '\nERROR: USER not set. Run \n\n \texport USER=
 RUN --mount=type=cache,target=/var/cache/apt,id=apt \
   apt-get update && apt-get upgrade -y \
   && apt-get install -q -y --no-install-recommends \
+  clang-format \
   git \
   inkscape \
   neovim \
