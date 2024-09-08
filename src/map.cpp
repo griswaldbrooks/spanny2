@@ -12,6 +12,7 @@
 #include <iostream>
 #include <iterator>
 #include <numbers>
+#include <ranges>
 #include <string>
 
 namespace stdex = std::experimental;
@@ -91,7 +92,8 @@ std::vector<std::vector<int>> bresenham_conversion(int x0, int y0, int x1, int y
   }
 
   // Push final point
-  v.push_back({p0[0], p1[1]});
+  // v.push_back({p0[0], p1[1]});
+  v.push_back({p1[0], p1[1]});
 
   return v;
 }
@@ -272,6 +274,123 @@ struct layout_rotatable {
     coordinate_t translation_;
     double theta_;
     extents_type parent_shape_;
+  };
+};
+
+template <typename T>
+bool in_bounds(T const& value, T const& lo, T const& hi) {
+  return lo <= value && value <= hi;
+}
+
+bool in_bounds(geometry::Cell const& value, std::dextents<std::size_t, 2> bounds) {
+  return in_bounds(value.x, 0, static_cast<int>(bounds.extent(1))) &&
+         in_bounds(value.y, 0, static_cast<int>(bounds.extent(0)));
+}
+
+struct layout_vertices {
+  template <typename Extents>
+  requires(Extents::rank() == 1) struct mapping {
+    using extents_type = Extents;
+    using size_type = typename extents_type::size_type;
+
+    constexpr mapping(std::dextents<std::size_t, 2> parent_shape,
+                      std::vector<geometry::Cell> vertices, geometry::Cell const& p, double theta)
+        : parent_shape_{std::move(parent_shape)},
+          vertices_{[&] {
+            std::vector<geometry::Cell> transformed_vertices;
+            for (auto& v : vertices) {
+              auto x = static_cast<int>(v.x * std::cos(theta) - v.y * std::sin(theta) + p.x);
+              auto y = static_cast<int>(v.x * std::sin(theta) + v.y * std::cos(theta) + p.y);
+              v.x = x;
+              v.y = y;
+              if (in_bounds(v, parent_shape_)) {
+                transformed_vertices.push_back(v);
+              }
+            }
+            return transformed_vertices;
+          }()},
+          extents_{vertices_.size()} {}
+
+    constexpr extents_type const& extents() const noexcept { return extents_; }
+
+    constexpr size_type operator()(size_type i) const noexcept {
+      auto const& coord = vertices_[i];
+      auto const x = static_cast<size_type>(coord.x);
+      auto const y = static_cast<size_type>(coord.y);
+
+      auto const offset = x + y * parent_shape_.extent(1);
+      return offset;
+    }
+
+    constexpr size_type required_span_size() const noexcept { return vertices_.size(); }
+
+    static constexpr bool is_always_unique() noexcept { return false; }
+    static constexpr bool is_always_exhaustive() noexcept { return true; }
+    static constexpr bool is_always_strided() noexcept { return false; }
+
+    constexpr bool is_unique() const noexcept { return false; }
+    constexpr bool is_exhaustive() const noexcept { return true; }
+    constexpr bool is_strided() const noexcept { return false; }
+
+   private:
+    std::dextents<std::size_t, 2> parent_shape_;
+    std::vector<geometry::Cell> vertices_;
+    extents_type extents_;
+  };
+};
+
+struct layout_raytrace {
+  template <typename Extents>
+  requires(Extents::rank() == 1) struct mapping {
+    using extents_type = Extents;
+    using size_type = typename extents_type::size_type;
+
+    constexpr mapping(std::dextents<std::size_t, 2> parent_shape,
+                      std::vector<geometry::Cell> vertices, geometry::Cell const& p, double theta)
+        : parent_shape_{std::move(parent_shape)},
+          rays_{[&] {
+            std::vector<geometry::Cell> rays;
+            for (auto& v : vertices) {
+              auto x = static_cast<int>(v.x * std::cos(theta) - v.y * std::sin(theta) + p.x);
+              auto y = static_cast<int>(v.x * std::sin(theta) + v.y * std::cos(theta) + p.y);
+              v.x = x;
+              v.y = y;
+              auto const ray = raytrace(p, v, std::numeric_limits<int>::max());
+              for (auto const& pixel : ray) {
+                if (in_bounds(pixel, parent_shape_)) {
+                  rays.push_back(pixel);
+                }
+              }
+            }
+            return rays;
+          }()},
+          extents_{rays_.size()} {}
+
+    constexpr extents_type const& extents() const noexcept { return extents_; }
+
+    constexpr size_type operator()(size_type i) const noexcept {
+      auto const& coord = rays_[i];
+      auto const x = static_cast<size_type>(coord.x);
+      auto const y = static_cast<size_type>(coord.y);
+
+      auto const offset = x + y * parent_shape_.extent(1);
+      return offset;
+    }
+
+    constexpr size_type required_span_size() const noexcept { return rays_.size(); }
+
+    static constexpr bool is_always_unique() noexcept { return false; }
+    static constexpr bool is_always_exhaustive() noexcept { return true; }
+    static constexpr bool is_always_strided() noexcept { return false; }
+
+    constexpr bool is_unique() const noexcept { return false; }
+    constexpr bool is_exhaustive() const noexcept { return true; }
+    constexpr bool is_strided() const noexcept { return false; }
+
+   private:
+    std::dextents<std::size_t, 2> parent_shape_;
+    std::vector<geometry::Cell> rays_;
+    extents_type extents_;
   };
 };
 
@@ -479,6 +598,20 @@ struct occupancy_grid_t {
     return {data_.data(), footprint};
   }
 
+  std::mdspan<unsigned char, std::dextents<std::size_t, 1>, layout_vertices> window_vertices(
+      std::vector<geometry::Cell> const& endpoints, geometry::Cell const& p, double theta) {
+    layout_vertices::mapping<std::dextents<std::size_t, 1>> scan{grid_.extents(), endpoints, p,
+                                                                 theta};
+    return {data_.data(), scan};
+  }
+
+  std::mdspan<unsigned char, std::dextents<std::size_t, 1>, layout_raytrace> window_raytrace(
+      std::vector<geometry::Cell> const& endpoints, geometry::Cell const& p, double theta) {
+    layout_raytrace::mapping<std::dextents<std::size_t, 1>> scan{grid_.extents(), endpoints, p,
+                                                                 theta};
+    return {data_.data(), scan};
+  }
+
   unsigned char* data() { return data_.data(); }
 
   std::dextents<std::size_t, 2> extents() { return grid_.extents(); }
@@ -524,7 +657,7 @@ requires(Container::extents_type::rank() == 2) bool is_occupied(Container const&
 
 template <typename Container>
 requires(Container::extents_type::rank() ==
-         1) void set(Container& footprint, typename Container::value_type const& value) {
+         1) void set(Container footprint, typename Container::value_type const& value) {
   for (auto i = 0u; i != footprint.extent(0); i++) {
     footprint(i) = value;
   }
@@ -532,7 +665,7 @@ requires(Container::extents_type::rank() ==
 
 template <typename Container>
 requires(Container::extents_type::rank() == 2)  //
-    void set(Container& footprint, typename Container::value_type const& value) {
+    void set(Container footprint, typename Container::value_type const& value) {
   for (auto i = 0u; i != footprint.extent(0); i++) {
     for (auto j = 0u; j != footprint.extent(1); j++) {
       footprint(i, j) = value;
@@ -540,11 +673,19 @@ requires(Container::extents_type::rank() == 2)  //
   }
 }
 
+void set_scan(occupancy_grid_t& grid, std::vector<geometry::Cell> const& scan,
+              geometry::Cell const& center, double orientation) {
+  unsigned char const clear = 255;
+  unsigned char const occlusion = 0;
+  set(grid.window_raytrace(scan, center, orientation), clear);
+  set(grid.window_vertices(scan, center, orientation), occlusion);
+}
+
 void save_occupancy_grid(std::filesystem::path const& filename, occupancy_grid_t& grid) {
   auto const shape = grid.extents();
   // Create a 8-bit unsigned single-channel grayscale cv::Mat
-  cv::Mat const img(static_cast<int>(shape.extent(0)), static_cast<int>(shape.extent(1)),
-              CV_8UC1, grid.data());
+  cv::Mat const img(static_cast<int>(shape.extent(0)), static_cast<int>(shape.extent(1)), CV_8UC1,
+                    grid.data());
 
   cv::imwrite(filename, img);
 }
@@ -565,7 +706,9 @@ void save_occupancy_grid(std::filesystem::path const& filename, occupancy_grid_t
 }
 
 int main(int /* argc */, char** /* argv[] */) {
-  auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{20, 30}, 0};
+  // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 1>{20, 30}, 0};
+  // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{40, 60}, 127};
+  auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{768, 1024}, 127};
   auto map_maybe = load_occupancy_grid("/home/griswald/ws/occupancy_grid.png");
   if (!map_maybe.has_value()) {
     std::cout << map_maybe.error() << "\n";
@@ -573,12 +716,13 @@ int main(int /* argc */, char** /* argv[] */) {
     global_map = map_maybe.value();
   }
 
-  std::cout << global_map << "\n";
+  // std::cout << global_map << "\n";
   // This one doesn't work. Show this as the negative example (both layout_right
   // and layout_left)
   auto window_bad =
       global_map.window_from_layout_right(std::dextents<std::size_t, 2>{5, 4}, {10, 15});
   set(window_bad, 100);
+  set(window_bad, 120);
   // This works and uses layout_stride.
   // Show how this can also do multistride
   // Note the slide from Bryce Lelbach and the data[i * M + j] vs data[i * X + j
@@ -587,11 +731,13 @@ int main(int /* argc */, char** /* argv[] */) {
   auto window_good =
       global_map.window_from_layout_stride(std::dextents<std::size_t, 2>{4, 4}, {20, 1});
   set(window_good, 200);
-  std::cout << global_map << "\n";
+  set(window_good, 127);
+  // std::cout << global_map << "\n";
   // But for the local costmap example, using submdspan is even easier and
   // simpler to grok not needing to mess with pointer offsets
   auto local_map = global_map.window_submdspan(std::dextents<std::size_t, 2>{4, 4}, {10, 5});
   set(local_map, 3);
+  set(local_map, 127);
 
   // Character to display that changes every loop
   unsigned char c = 200;
@@ -622,14 +768,29 @@ int main(int /* argc */, char** /* argv[] */) {
     // you would probably have to do a begin and end, and not add an offset.
     //
     // print map
-    std::cout << global_map << std::endl;
+    // std::cout << global_map << std::endl;
     // Clear footprint
-    set(footprint, 0);
+    set(footprint, 127);
     // Clear footprint
-    set(rotatable, 0);
-    std::cin.get();
+    set(rotatable, 127);
+    // std::cin.get();
   }
 
+  std::vector<geometry::Cell> laser_scan;
+  for (auto const& degree : std::views::iota(-135, 135)) {
+    // for (auto const& degree : std::views::iota(-10, 10)) {
+    double const theta = geometry::degrees_to_radians(degree);
+    // double const range = 20.;
+    double const range = 300.;
+    laser_scan.emplace_back(static_cast<int>(range * std::cos(theta)),
+                            static_cast<int>(range * std::sin(theta)));
+  }
+
+  // auto const center = geometry::Cell{30, 10};
+  auto const center = geometry::Cell{500, 300};
+  double const orientation = 2.;
+  set_scan(global_map, laser_scan, center, orientation);
+  // std::cout << global_map << std::endl;
   save_occupancy_grid("occupancy_grid.png", global_map);
   return 0;
 }
