@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 on: [push, pull_request, workflow_dispatch]
 
@@ -6,7 +6,7 @@ jobs:
   build:
     name: ${{matrix.platform.name}} ${{matrix.type.name}} ${{matrix.config.name}}
     runs-on: ${{matrix.platform.os}}
-
+    container: ghcr.io/griswaldbrooks/spanny2:upstream
     strategy:
       fail-fast: false
       matrix:
