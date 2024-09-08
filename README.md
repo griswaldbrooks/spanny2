@@ -1,3 +1,4 @@
+[![ci](https://github.com/griswaldbrooks/spanny2/actions/workflows/ci.yml/badge.svg)](https://github.com/griswaldbrooks/spanny2/actions/workflows/ci.yml)
 # spanny2
 Robot arm project for CppCon 2024 presentation.
 
