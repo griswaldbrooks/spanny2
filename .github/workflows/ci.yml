@@ -12,7 +12,6 @@ jobs:
       matrix:
         platform:
         - { name: Linux,   os: ubuntu-latest }
-        - { name: macOS,   os: macos-latest }
         type:
         - { name: Shared, flags: "ON" }
         - { name: Static, flags: "OFF" }
