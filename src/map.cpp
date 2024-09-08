@@ -210,23 +210,6 @@ double degrees_to_radians(double degrees) { return degrees * std::numbers::pi / 
 
 }  // namespace geometry
 
-struct bounds_checked_layout_policy {
-  template <typename Extents>
-  struct mapping : std::layout_right::mapping<Extents> {
-    using base_t = std::layout_right::mapping<Extents>;
-    using base_t::base_t;
-    std::ptrdiff_t operator()(auto... idxs) const {
-      [&]<size_t... Is>(std::index_sequence<Is...>) {
-        if (((idxs < 0 || idxs > this->extents().extent(Is)) || ...)) {
-          throw std::out_of_range("Invalid bin index");
-        }
-      }
-      (std::make_index_sequence<sizeof...(idxs)>{});
-      return this->base_t::operator()(idxs...);
-    }
-  };
-};
-
 struct layout_rotatable {
   template <typename Extents>
   requires(Extents::rank() == 2) struct mapping {
