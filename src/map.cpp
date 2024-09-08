@@ -707,8 +707,8 @@ void save_occupancy_grid(std::filesystem::path const& filename, occupancy_grid_t
 
 int main(int /* argc */, char** /* argv[] */) {
   // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 1>{20, 30}, 0};
-  // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{40, 60}, 127};
-  auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{768, 1024}, 127};
+  auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{40, 60}, 127};
+  // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{768, 1024}, 127};
   auto map_maybe = load_occupancy_grid("/home/griswald/ws/occupancy_grid.png");
   if (!map_maybe.has_value()) {
     std::cout << map_maybe.error() << "\n";
@@ -740,24 +740,23 @@ int main(int /* argc */, char** /* argv[] */) {
   set(local_map, 127);
 
   // Character to display that changes every loop
-  unsigned char c = 200;
-  // // create footprint
-  // // rotates around upper left corner
-  std::vector<geometry::Cell> const vertices = {{0, 0}, {3, 0}, {3, 3}, {0, 3}};
-  // // rotates somewhere around center
-  // // std::vector<geometry::Cell> vertices = {{-2,-2},{3,-2},{3,3},{-2,3}};
-  geometry::Cell const p = {3, 3};
+  // create footprint
+  // rotates around upper left corner
+  // std::vector<geometry::Cell> const vertices = {{0, 0}, {3, 0}, {3, 3}, {0, 3}};
+  // rotates somewhere around center
+  std::vector<geometry::Cell> vertices = {{-8, -8}, {8, -8}, {8, 0}, {2, 10}, {-2, 10}, {-8, 0}};
+  geometry::Cell const p = {30, 20};
   for (auto const& angle : {0, 12, 22, 30, 45, 58, 67, 79, 90}) {
     double const theta = geometry::degrees_to_radians(angle);
 
     auto footprint = global_map.window_polygonal(vertices, p, theta);
     std::cout << "footprint is_occupied = " << is_occupied(footprint) << "\n";
-    set(footprint, c);
+    set(footprint, 0);
     std::cout << "footprint is_occupied = " << is_occupied(footprint) << "\n";
 
     auto rotatable =
         global_map.window_rotatable(std::dextents<std::size_t, 2>{4, 4}, {10, 10}, theta);
-    set(rotatable, c);
+    set(rotatable, 255);
 
     // What's interesting is that if you try to use
     // std::fill(window.data_handle(), window.data_handle() + offset, 1);
@@ -768,29 +767,29 @@ int main(int /* argc */, char** /* argv[] */) {
     // you would probably have to do a begin and end, and not add an offset.
     //
     // print map
-    // std::cout << global_map << std::endl;
+    std::cout << global_map << std::endl;
     // Clear footprint
     set(footprint, 127);
     // Clear footprint
     set(rotatable, 127);
-    // std::cin.get();
+    std::cin.get();
   }
 
   std::vector<geometry::Cell> laser_scan;
   for (auto const& degree : std::views::iota(-135, 135)) {
     // for (auto const& degree : std::views::iota(-10, 10)) {
     double const theta = geometry::degrees_to_radians(degree);
-    // double const range = 20.;
-    double const range = 300.;
+    double const range = 20.;
+    // double const range = 300.;
     laser_scan.emplace_back(static_cast<int>(range * std::cos(theta)),
                             static_cast<int>(range * std::sin(theta)));
   }
 
-  // auto const center = geometry::Cell{30, 10};
-  auto const center = geometry::Cell{500, 300};
+  auto const center = geometry::Cell{30, 10};
+  // auto const center = geometry::Cell{500, 300};
   double const orientation = 2.;
   set_scan(global_map, laser_scan, center, orientation);
-  // std::cout << global_map << std::endl;
-  save_occupancy_grid("occupancy_grid.png", global_map);
+  std::cout << global_map << std::endl;
+  // save_occupancy_grid("occupancy_grid.png", global_map);
   return 0;
 }
