@@ -7,10 +7,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
   add_compile_options(-Werror -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
 endif()
 
+add_library(json INTERFACE)
+add_library(nlohmann::json ALIAS json)
+target_include_directories(json INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/nlohmann>)
+target_compile_features(json INTERFACE cxx_std_20)
+
 add_executable(spanny2
   src/main.cpp
 )
-target_link_libraries(spanny2 PRIVATE serial mdspan expected)
+target_link_libraries(spanny2 PRIVATE serial mdspan expected nlohmann::json)
 target_include_directories(spanny2 INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_compile_features(spanny2 INTERFACE cxx_std_20)
 
