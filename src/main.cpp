@@ -97,15 +97,14 @@ struct bounds_checked_layout {
 
 using bin_grid_t = std::mdspan<position_t, std::extents<std::size_t, 2, 3>, bounds_checked_layout>;
 
-template<typename Arbiter>
+template <typename Arbiter>
 struct bin_checker_t {
   using element_type = tl::expected<bin_state, std::string>;
   using reference = element_type;
   using data_handle_type = position_t*;
   using size_type = std::size_t;
-  
-  explicit bin_checker_t(Arbiter* checker):
-    checker_{std::move(checker)}{}
+
+  explicit bin_checker_t(Arbiter* checker) : checker_{std::move(checker)} {}
 
   reference access(data_handle_type bin_positions, size_type offset) const {
     auto const goal = bin_positions[offset];
@@ -115,23 +114,28 @@ struct bin_checker_t {
     }
     return bin_state{state_maybe.value(), goal};
   }
-private:
+
+ private:
   Arbiter* checker_;
 };
 
+// template <typename Arbiter>
+// using bin_view_t = std::mdspan<tl::expected<bin_state, std::string>,
+//                                std::extents<std::size_t, 2, 3>,
+//                                bounds_checked_layout,
+//                                bin_checker_t<Arbiter>>;
 template <typename Arbiter>
-using bin_view_t = std::mdspan<tl::expected<bin_state, std::string>,
+using bin_view_t = std::mdspan<typename bin_checker_t<Arbiter>::element_type,
                                // We're treating our 6 bins as a 2x3 matrix
                                std::extents<std::size_t, 2, 3>,
                                // Our layout should do bounds-checking
                                bounds_checked_layout,
-                               // Our accessor should tell the robot to
-                               // asynchronously access the bin
+                               // Tell the robot to synchronously access the bin
                                bin_checker_t<Arbiter>>;
 
 std::ostream& operator<<(std::ostream& os, tl::expected<bin_state, std::string> const& bin_maybe) {
   if (!bin_maybe.has_value()) {
-  os << bin_maybe.error();
+    os << bin_maybe.error();
     return os;
   }
   auto const& state = bin_maybe.value();
@@ -349,7 +353,7 @@ struct hardware_interface {
 };
 
 struct mock_hardware : public hardware_interface {
-  explicit mock_hardware(kinematics_t arm):arm_(std::move(arm)){}
+  explicit mock_hardware(kinematics_t arm) : arm_(std::move(arm)) {}
   tl::expected<bin_occupancy, std::string> operator()(std::vector<joint_angles> const& path) const {
     std::cout << "x, y\n";
     std::ranges::for_each(path, [&](auto const& j) {
@@ -496,7 +500,6 @@ struct arbiter_single {
 //     });
 //   }
 // };
-
 
 int main() {
   std::ifstream bin_file{"src/spanny2/config/bin_config.json"};
