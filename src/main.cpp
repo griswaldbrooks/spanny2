@@ -591,6 +591,7 @@ struct arbiter_dual_async {
         auto const other_goal = right_goal();
         // Get the list of available goals
         auto const allowed_goals = available_goals(bins_, model_[0], other_goal);
+        std::cout << "left goals size = " << allowed_goals.size() << "\n";
         // Check if any of the goals on the queue are available
         auto work_maybe = queue_.pop();
         if (work_maybe.has_value()) {
@@ -600,17 +601,51 @@ struct arbiter_dual_async {
           // If the goal is allowed, do it
           if (std::ranges::any_of(allowed_goals,
                                   [&](auto const& allowed) { return same(goal, allowed); })) {
-            // std::cout << "  DO  " << std::endl;
-            task(goal, "my arm");
+            std::cout << "left do" << std::endl;
+            left_goal(goal);
+            task(goal, "left arm");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
           } else {
             // put it back
-            // std::cout << " back " << std::endl;
+            std::cout << "left back " << std::endl;
             queue_.push(std::move(work_maybe.value()));
           }
         } else {
-          // std::cout << "no work" << std::endl;
+          std::cout << "left no work" << std::endl;
         }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        // Reset to indicate that the goal is not being worked on
+        left_goal({0., 0.});
+      }
+    }};
+    right_engine_ = std::jthread{[this] {
+      while (!done_) {
+        // get the goal of the other arm
+        auto const other_goal = left_goal();
+        // Get the list of available goals
+        auto const allowed_goals = available_goals(bins_, model_[1], other_goal);
+        std::cout << "right goals size = " << allowed_goals.size() << "\n";
+        // Check if any of the goals on the queue are available
+        auto work_maybe = queue_.pop();
+        if (work_maybe.has_value()) {
+          // std::cout << "work" << std::endl;
+          auto& [goal, task] = work_maybe.value();
+          // std::cout << goal << std::endl;
+          // If the goal is allowed, do it
+          if (std::ranges::any_of(allowed_goals,
+                                  [&](auto const& allowed) { return same(goal, allowed); })) {
+            std::cout << "right do  " << std::endl;
+            right_goal(goal);
+            task(goal, "right arm");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+          } else {
+            // put it back
+            std::cout << "right back " << std::endl;
+            queue_.push(std::move(work_maybe.value()));
+          }
+        } else {
+          std::cout << "right no work" << std::endl;
+        }
+        right_goal({0., 0.});
       }
     }};
   }
@@ -628,7 +663,25 @@ struct arbiter_dual_async {
     return result;
   }
 
-  position_t right_goal() { return {0., 0.}; }
+  position_t left_goal() { 
+    std::lock_guard{left_mutex_};
+    return left_goal_; 
+  }
+
+  void left_goal(position_t const& value) { 
+    std::lock_guard{left_mutex_};
+    left_goal_ = value; 
+  }
+
+  position_t right_goal() {
+    std::lock_guard{right_mutex_};
+    return right_goal_;
+  }
+
+  void right_goal(position_t const& value) {
+    std::lock_guard{right_mutex_};
+    right_goal_ = value;
+  }
 
   // result_type is_bin_occupied([[maybe_unused]] position_t goal){
   // Check if an arm is available
@@ -644,7 +697,12 @@ struct arbiter_dual_async {
   thread_safe_queue<std::pair<position_t, std::packaged_task<result_type(position_t, std::string)>>>
       queue_;
   std::atomic<bool> done_ = false;
+  std::mutex left_mutex_;
+  std::mutex right_mutex_;
+  position_t left_goal_{0., 0.};
+  position_t right_goal_{0., 0.};
   std::jthread left_engine_;
+  std::jthread right_engine_;
 };
 
 // Bin checker for single arm sync should
