@@ -56,26 +56,6 @@ struct kinematics_t {
   bool elbow_up;
 };
 
-// struct robot_arm {
-//   robot_arm(std::string port, uint32_t baudrate,
-//             serial::Timeout timeout = serial::Timeout::simpleTimeout(10000))
-//       : serial_(std::move(port), baudrate, std::move(timeout)) {}
-//
-//   bin_occupancy is_bin_occupied(int bin) {
-//     if (!serial_.isOpen()) {
-//       throw std::runtime_error("Error opening serial port");
-//     }
-//     serial_.write(std::to_string(bin));
-//     auto const result = std::stoi(serial_.readline());
-//     if (result == 1) {
-//       return bin_occupancy::OCCUPIED;
-//     }
-//     return bin_occupancy::EMPTY;
-//   }
-//
-//   serial::Serial serial_;
-// };
-
 struct bounds_checked_layout {
   template <class Extents>
   struct mapping : std::layout_right::mapping<Extents> {
@@ -119,6 +99,24 @@ struct bin_checker_t {
   Arbiter* checker_;
 };
 
+template <typename Arbiter>
+struct bin_checker_async_t {
+  using element_type = tl::expected<bin_state, std::string>;
+  using reference = std::future<element_type>;
+  using data_handle_type = position_t*;
+  using size_type = std::size_t;
+
+  explicit bin_checker_async_t(Arbiter* checker) : checker_{std::move(checker)} {}
+
+  reference access(data_handle_type bin_positions, size_type offset) const {
+    auto const goal = bin_positions[offset];
+    return (*checker_)(goal);
+  }
+
+ private:
+  Arbiter* checker_;
+};
+
 // template <typename Arbiter>
 // using bin_view_t = std::mdspan<tl::expected<bin_state, std::string>,
 //                                std::extents<std::size_t, 2, 3>,
@@ -132,6 +130,15 @@ using bin_view_t = std::mdspan<typename bin_checker_t<Arbiter>::element_type,
                                bounds_checked_layout,
                                // Tell the robot to synchronously access the bin
                                bin_checker_t<Arbiter>>;
+
+template <typename Arbiter>
+using bin_view_async_t = std::mdspan<typename bin_checker_t<Arbiter>::element_type,
+                                     // We're treating our 6 bins as a 2x3 matrix
+                                     std::extents<std::size_t, 2, 3>,
+                                     // Our layout should do bounds-checking
+                                     bounds_checked_layout,
+                                     // Tell the robot to synchronously access the bin
+                                     bin_checker_async_t<Arbiter>>;
 
 std::ostream& operator<<(std::ostream& os, tl::expected<bin_state, std::string> const& bin_maybe) {
   if (!bin_maybe.has_value()) {
@@ -277,17 +284,6 @@ std::vector<joint_angles> plan_joint(path_t const& waypoints, kinematics_t const
     path.insert(path.end(), ++line.begin(), line.end());
   }
   return path;
-  // // Linearly interpolate between start and waypoint
-  // auto const jstart = inverse_kinematics(start, arm);
-  // auto const jwaypoint = inverse_kinematics(waypoint, arm);
-  // auto const p = lerp(jstart, jwaypoint);
-  // path.insert(path.end(), p.begin(), p.end());
-  // // Linearly interpolate between waypoint and goal
-  // auto const jgoal = inverse_kinematics(goal, arm);
-  // auto const q = lerp(jwaypoint, jgoal);
-  // // trim off the first pose as it is the waypoint
-  // path.insert(path.end(), ++q.begin(), q.end());
-  // return path;
 }
 
 // function that takes arms current goal and returns which arm should service the goal
@@ -428,13 +424,8 @@ struct hardware : public hardware_interface {
 //    - command path
 
 struct arbiter_single {
-  arbiter_single(std::unique_ptr<hardware_interface> hw)
-      : model_{"left arm",
-               {0.150, 0.160 - 0.0085},  // 8.5 mm is the offset of the light detector from the end
-                                         // of the forearm
-               {0.026, 0.078},           // shoulder origin
-               std::numbers::pi / 2.,    // rotated relative to the workspace
-               false},                   // left arm should be elbow down from it's perspective
+  arbiter_single(kinematics_t model, std::unique_ptr<hardware_interface> hw)
+      : model_{std::move(model)},
         state_{0., 0.},
         home_{forward_kinematics(state_, model_)},
         command_path_{std::move(hw)} {
@@ -459,24 +450,9 @@ struct arbiter_single {
 };
 
 struct arbiter_dual {
-  arbiter_dual(std::unique_ptr<hardware_interface> hw_left,
-               std::unique_ptr<hardware_interface> hw_right)
-      : model_{{{
-                    "left arm",
-                    {0.150, 0.160 - 0.0085},  // 8.5 mm is the offset of the light detector from the
-                                              // end of the forearm
-                    {0.026, 0.078},           // shoulder origin
-                    std::numbers::pi / 2.,    // rotated relative to the workspace
-                    false                     // left arm should be elbow down from it's perspective
-                },
-                {
-                    "right arm",
-                    {0.150, 0.160 - 0.0085},  // 8.5 mm is the offset of the light detector from the
-                                              // end of the forearm
-                    {0.026 + 0.431, 0.078},
-                    std::numbers::pi / 2.,
-                    true  // right arm should be elbow up from it's perspective
-                }}},
+  arbiter_dual(kinematics_t model_left, std::unique_ptr<hardware_interface> hw_left,
+               kinematics_t model_right, std::unique_ptr<hardware_interface> hw_right)
+      : model_{{std::move(model_left), std::move(model_right)}},
         home_{{model_[0].description, forward_kinematics({0., 0.}, model_[0])},
               {model_[1].description, forward_kinematics({0., 0.}, model_[1])}} {
     hw_.emplace(model_[0].description, std::move(hw_left));
@@ -502,6 +478,29 @@ struct arbiter_dual {
   std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
 };
 
+struct arbiter_dual_async {
+  arbiter_dual_async(kinematics_t model_left, std::unique_ptr<hardware_interface> hw_left,
+                     kinematics_t model_right, std::unique_ptr<hardware_interface> hw_right)
+      : model_{{std::move(model_left), std::move(model_right)}},
+        home_{{model_[0].description, forward_kinematics({0., 0.}, model_[0])},
+              {model_[1].description, forward_kinematics({0., 0.}, model_[1])}} {
+    hw_.emplace(model_[0].description, std::move(hw_left));
+    hw_.emplace(model_[1].description, std::move(hw_right));
+  }
+
+  std::future<tl::expected<bin_state, std::string>> operator()(
+      [[maybe_unused]] position_t const& goal) {
+    return std::async([=] {
+      return tl::expected<bin_state, std::string>{
+          tl::make_unexpected(std::string{"Unimplemented"})};
+    });
+  }
+
+ private:
+  std::array<kinematics_t, 2> model_;
+  std::map<std::string, position_t> home_;
+  std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
+};
 // goal arbiter, dual arm partitioned
 // - goal comes in
 // - add goal to the queue of the correct robot
@@ -600,14 +599,15 @@ int main() {
 
   /* TEST PLANNER */
   // auto const path = plan_cartesian({forward_kinematics({0, 0}, right_arm),
-  //                                   generate_waypoint(bin_grid(0, 0), right_arm), bin_grid(0, 0)});
+  //                                   generate_waypoint(bin_grid(0, 0), right_arm), bin_grid(0,
+  //                                   0)});
   // for (auto const& p : path) {
-    // auto const j = inverse_kinematics(p, right_arm);
-    // std::cout << j[0] << ", " << j[1] << "\n";
-    // std::cout << p.x << ", " << p.y << "\n";
+  // auto const j = inverse_kinematics(p, right_arm);
+  // std::cout << j[0] << ", " << j[1] << "\n";
+  // std::cout << p.x << ", " << p.y << "\n";
   // }
 
-  /* TEST ARM PARTIONING */
+  /* TEST ARM PARTITIONING */
   // std::ranges::for_each(bin_positions, [&](auto const& goal) {
   //   auto const arm = which_arm_parition(goal, {left_arm, right_arm});
   //   std::cout << arm.description << " {" << goal.x << ", " << goal.y << "}\n";
@@ -615,34 +615,57 @@ int main() {
 
   /* TEST AVAILABLE GOALS */
   // std::ranges::for_each(bin_positions, [&](auto const other_goal) {
-  //   std::cout << left_arm.description << " other_goal = {" << other_goal.x << ", " << other_goal.y
+  //   std::cout << left_arm.description << " other_goal = {" << other_goal.x << ", " <<
+  //   other_goal.y
   //             << "}\n";
   //   // auto const goals = available_goals(bin_grid, left_arm);
   //   auto const goals = available_goals(bin_grid, left_arm, other_goal);
-  //   std::ranges::for_each(goals, [](auto const& p) { std::cout << p.x << ", " << p.y << "\n"; });
+  //   std::ranges::for_each(goals, [](auto const& p) { std::cout << p.x << ", " << p.y << "\n";
+  //   });
   // });
 
   /* TEST SINGLE ARM SYNCHRONOUS */
   // {
-      // auto arbiter = arbiter_single{std::make_unique<mock_hardware>(left_arm)};
-      // auto bin_checker = bin_checker_t{&arbiter};
-      // auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
-      // for (auto i = 0u; i != bins.extent(0); ++i) {
-      //   for (auto j = 0u; j != bins.extent(1); ++j) {
-      //     std::cout << bins(i, j) << "\n";
-      //   }
-      // }
+  //   auto arbiter = arbiter_single{left_arm, std::make_unique<mock_hardware>(left_arm)};
+  //   auto bin_checker = bin_checker_t{&arbiter};
+  //   auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
+  //   for (auto i = 0u; i != bins.extent(0); ++i) {
+  //     for (auto j = 0u; j != bins.extent(1); ++j) {
+  //       std::cout << bins(i, j) << "\n";
+  //     }
+  //   }
   // }
   /* TEST DUAL ARM SYNCHRONOUS */
+  // {
+  //   auto arbiter = arbiter_dual{left_arm, std::make_unique<mock_hardware>(left_arm), right_arm,
+  //                               std::make_unique<mock_hardware>(right_arm)};
+  //   auto bin_checker = bin_checker_t{&arbiter};
+  //   auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
+  //   for (auto i = 0u; i != bins.extent(0); ++i) {
+  //     for (auto j = 0u; j != bins.extent(1); ++j) {
+  //       std::cout << bins(i, j) << "\n";
+  //     }
+  //   }
+  // }
+  /* TEST DUAL ARM ASYNCHRONOUS */
   {
-    auto arbiter = arbiter_dual{std::make_unique<mock_hardware>(left_arm),
-                                std::make_unique<mock_hardware>(right_arm)};
-    auto bin_checker = bin_checker_t{&arbiter};
-    auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
+    auto arbiter = arbiter_dual_async{left_arm, std::make_unique<mock_hardware>(left_arm),
+                                      right_arm, std::make_unique<mock_hardware>(right_arm)};
+    auto bin_checker = bin_checker_async_t{&arbiter};
+    auto bins = bin_view_async_t(bin_positions.data(), {}, bin_checker);
+    std::vector<std::future<tl::expected<bin_state, std::string>>> futures;
     for (auto i = 0u; i != bins.extent(0); ++i) {
       for (auto j = 0u; j != bins.extent(1); ++j) {
-        std::cout << bins(i, j) << "\n";
+        futures.push_back(bins(i, j));
       }
+    }
+    // Let the arms resolve the moves
+    for (auto const& future : futures) {
+      future.wait();
+    }
+
+    for (auto& future : futures) {
+      std::cout << future.get() << "\n";
     }
   }
   return 0;
