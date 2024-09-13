@@ -353,16 +353,17 @@ struct hardware_interface {
 };
 
 struct mock_hardware : public hardware_interface {
-  explicit mock_hardware(kinematics_t arm) : arm_(std::move(arm)) {}
+  explicit mock_hardware(kinematics_t model) : model_(std::move(model)) {}
   tl::expected<bin_occupancy, std::string> operator()(std::vector<joint_angles> const& path) const {
+    std::cout << model_.description << "\n";
     std::cout << "x, y\n";
     std::ranges::for_each(path, [&](auto const& j) {
-      auto const p = forward_kinematics(j, arm_);
+      auto const p = forward_kinematics(j, model_);
       std::cout << p.x << ", " << p.y << "\n";
     });
     return bin_occupancy::EMPTY;
   };
-  kinematics_t arm_;
+  kinematics_t model_;
 };
 
 struct hardware : public hardware_interface {
@@ -436,7 +437,9 @@ struct arbiter_single {
                false},                   // left arm should be elbow down from it's perspective
         state_{0., 0.},
         home_{forward_kinematics(state_, model_)},
-        command_path_{std::move(hw)} {}
+        command_path_{std::move(hw)} {
+    (*command_path_)({state_});
+  }
 
   tl::expected<bin_occupancy, std::string> operator()(position_t const& goal) {
     auto const near_goal = generate_waypoint(goal, model_);
@@ -453,6 +456,50 @@ struct arbiter_single {
   joint_angles state_;
   position_t home_;
   std::unique_ptr<hardware_interface> command_path_;
+};
+
+struct arbiter_dual {
+  arbiter_dual(std::unique_ptr<hardware_interface> hw_left,
+               std::unique_ptr<hardware_interface> hw_right)
+      : model_{{{
+                    "left arm",
+                    {0.150, 0.160 - 0.0085},  // 8.5 mm is the offset of the light detector from the
+                                              // end of the forearm
+                    {0.026, 0.078},           // shoulder origin
+                    std::numbers::pi / 2.,    // rotated relative to the workspace
+                    false                     // left arm should be elbow down from it's perspective
+                },
+                {
+                    "right arm",
+                    {0.150, 0.160 - 0.0085},  // 8.5 mm is the offset of the light detector from the
+                                              // end of the forearm
+                    {0.026 + 0.431, 0.078},
+                    std::numbers::pi / 2.,
+                    true  // right arm should be elbow up from it's perspective
+                }}},
+        home_{{model_[0].description, forward_kinematics({0., 0.}, model_[0])},
+              {model_[1].description, forward_kinematics({0., 0.}, model_[1])}} {
+    hw_.emplace(model_[0].description, std::move(hw_left));
+    hw_.emplace(model_[1].description, std::move(hw_right));
+  }
+
+  tl::expected<bin_occupancy, std::string> operator()(position_t const& goal) {
+    auto const model = which_arm_parition(goal, model_);
+    auto& command_path = *hw_.at(model.description);
+    auto const home = home_.at(model.description);
+    auto const near_goal = generate_waypoint(goal, model);
+    auto const goto_goal = inverse_kinematics(plan_cartesian({home, near_goal, goal}), model);
+    auto const sensor_reading_maybe = command_path(goto_goal);
+    // Out current cartesian position should be at the goal
+    auto const goto_home = inverse_kinematics(plan_cartesian({goal, near_goal, home}), model);
+    command_path(goto_home);
+    return sensor_reading_maybe;
+  }
+
+ private:
+  std::array<kinematics_t, 2> model_;
+  std::map<std::string, position_t> home_;
+  std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
 };
 
 // goal arbiter, dual arm partitioned
@@ -504,7 +551,8 @@ struct arbiter_single {
 int main() {
   std::ifstream bin_file{"src/spanny2/config/bin_config.json"};
   json bin_config = json::parse(bin_file);
-  std::cout << bin_config.dump(2) << std::endl;
+  /* TEST json loading */
+  // std::cout << bin_config.dump(2) << std::endl;
 
   std::array<position_t, 6> bin_positions;
   std::ranges::transform(bin_config["locations"].get<std::vector<std::vector<double>>>(),
@@ -512,13 +560,14 @@ int main() {
                            return position_t{p[0], p[1]};
                          });
 
-  bin_grid_t bin_grid{bin_positions.data()};
-  for (auto i = 0u; i < bin_grid.extent(0); ++i) {
-    for (auto j = 0u; j < bin_grid.extent(1); ++j) {
-      auto const p = bin_grid(i, j);
-      std::cout << "(" << i << ", " << j << ") = {" << p.x << ", " << p.y << "}\n";
-    }
-  }
+  /* TEST 2x3 mdspan */
+  // bin_grid_t bin_grid{bin_positions.data()};
+  // for (auto i = 0u; i < bin_grid.extent(0); ++i) {
+  //   for (auto j = 0u; j < bin_grid.extent(1); ++j) {
+  //     auto const p = bin_grid(i, j);
+  //     std::cout << "(" << i << ", " << j << ") = {" << p.x << ", " << p.y << "}\n";
+  //   }
+  // }
 
   kinematics_t left_arm, right_arm;
   left_arm.description = "left arm";
@@ -535,46 +584,65 @@ int main() {
   right_arm.orientation = std::numbers::pi / 2.;
   right_arm.elbow_up = true;
 
-  // Testing
-  {
-    auto const angles = inverse_kinematics({0.185, 0.067}, right_arm);
-    auto const end_effector = forward_kinematics(angles, right_arm);
-    std::cout << "right end_effector = {" << end_effector.x << ", " << end_effector.y << "}\n";
-    std::cout << "angles = {" << angles[0] << ", " << angles[1] << "}\n";
-  }
-  {
-    auto const angles = inverse_kinematics({0.185, 0.067}, left_arm);
-    auto const end_effector = forward_kinematics(angles, left_arm);
-    std::cout << "left end_effector = {" << end_effector.x << ", " << end_effector.y << "}\n";
-    std::cout << "angles = {" << angles[0] << ", " << angles[1] << "}\n";
-  }
-  auto const path = plan_cartesian({forward_kinematics({0, 0}, right_arm),
-                                    generate_waypoint(bin_grid(0, 0), right_arm), bin_grid(0, 0)});
-  for (auto const& p : path) {
+  /* TEST KINEMATICS */
+  // {
+  //   auto const angles = inverse_kinematics({0.185, 0.067}, right_arm);
+  //   auto const end_effector = forward_kinematics(angles, right_arm);
+  //   std::cout << "right end_effector = {" << end_effector.x << ", " << end_effector.y << "}\n";
+  //   std::cout << "angles = {" << angles[0] << ", " << angles[1] << "}\n";
+  // }
+  // {
+  //   auto const angles = inverse_kinematics({0.185, 0.067}, left_arm);
+  //   auto const end_effector = forward_kinematics(angles, left_arm);
+  //   std::cout << "left end_effector = {" << end_effector.x << ", " << end_effector.y << "}\n";
+  //   std::cout << "angles = {" << angles[0] << ", " << angles[1] << "}\n";
+  // }
+
+  /* TEST PLANNER */
+  // auto const path = plan_cartesian({forward_kinematics({0, 0}, right_arm),
+  //                                   generate_waypoint(bin_grid(0, 0), right_arm), bin_grid(0, 0)});
+  // for (auto const& p : path) {
     // auto const j = inverse_kinematics(p, right_arm);
     // std::cout << j[0] << ", " << j[1] << "\n";
-    std::cout << p.x << ", " << p.y << "\n";
-  }
+    // std::cout << p.x << ", " << p.y << "\n";
+  // }
 
-  std::ranges::for_each(bin_positions, [&](auto const& goal) {
-    auto const arm = which_arm_parition(goal, {left_arm, right_arm});
-    std::cout << arm.description << " {" << goal.x << ", " << goal.y << "}\n";
-  });
+  /* TEST ARM PARTIONING */
+  // std::ranges::for_each(bin_positions, [&](auto const& goal) {
+  //   auto const arm = which_arm_parition(goal, {left_arm, right_arm});
+  //   std::cout << arm.description << " {" << goal.x << ", " << goal.y << "}\n";
+  // });
 
-  std::ranges::for_each(bin_positions, [&](auto const other_goal) {
-    std::cout << left_arm.description << " other_goal = {" << other_goal.x << ", " << other_goal.y
-              << "}\n";
-    // auto const goals = available_goals(bin_grid, left_arm);
-    auto const goals = available_goals(bin_grid, left_arm, other_goal);
-    std::ranges::for_each(goals, [](auto const& p) { std::cout << p.x << ", " << p.y << "\n"; });
-  });
+  /* TEST AVAILABLE GOALS */
+  // std::ranges::for_each(bin_positions, [&](auto const other_goal) {
+  //   std::cout << left_arm.description << " other_goal = {" << other_goal.x << ", " << other_goal.y
+  //             << "}\n";
+  //   // auto const goals = available_goals(bin_grid, left_arm);
+  //   auto const goals = available_goals(bin_grid, left_arm, other_goal);
+  //   std::ranges::for_each(goals, [](auto const& p) { std::cout << p.x << ", " << p.y << "\n"; });
+  // });
 
-  auto arbiter = arbiter_single{std::make_unique<mock_hardware>(left_arm)};
-  auto bin_checker = bin_checker_t{&arbiter};
-  auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
-  for (auto i = 0u; i != bins.extent(0); ++i) {
-    for (auto j = 0u; j != bins.extent(1); ++j) {
-      std::cout << bins(i, j) << "\n";
+  /* TEST SINGLE ARM SYNCHRONOUS */
+  // {
+      // auto arbiter = arbiter_single{std::make_unique<mock_hardware>(left_arm)};
+      // auto bin_checker = bin_checker_t{&arbiter};
+      // auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
+      // for (auto i = 0u; i != bins.extent(0); ++i) {
+      //   for (auto j = 0u; j != bins.extent(1); ++j) {
+      //     std::cout << bins(i, j) << "\n";
+      //   }
+      // }
+  // }
+  /* TEST DUAL ARM SYNCHRONOUS */
+  {
+    auto arbiter = arbiter_dual{std::make_unique<mock_hardware>(left_arm),
+                                std::make_unique<mock_hardware>(right_arm)};
+    auto bin_checker = bin_checker_t{&arbiter};
+    auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
+    for (auto i = 0u; i != bins.extent(0); ++i) {
+      for (auto j = 0u; j != bins.extent(1); ++j) {
+        std::cout << bins(i, j) << "\n";
+      }
     }
   }
   return 0;
