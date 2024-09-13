@@ -17,13 +17,17 @@ namespace stdex = std::experimental;
 using json = nlohmann::json;
 enum struct bin_occupancy { OCCUPIED, EMPTY };
 
-struct bin_coordinate {
-  int x, y;
+struct position_t {
+  double x, y;
 };
 
 struct bin_state {
   bin_occupancy occupancy;
-  bin_coordinate coordinate;
+  position_t location;
+};
+
+struct bin_coordinate {
+  int x, y;
 };
 
 bin_coordinate offset_to_coord(int offset, int width = 3) {
@@ -35,10 +39,6 @@ bin_coordinate offset_to_coord(int offset, int width = 3) {
 // Parameters that change... robot state
 // First joint (shoulder) is in index 0
 using joint_angles = std::array<double, 2>;
-
-struct position_t {
-  double x, y;
-};
 
 using path_t = std::vector<position_t>;
 
@@ -76,58 +76,12 @@ struct kinematics_t {
 //   serial::Serial serial_;
 // };
 
-double to_radians(double degrees) { return degrees * std::numbers::pi / 180.; }
-double to_degrees(double radians) { return radians * 180. / std::numbers::pi; }
-
-std::string serialize([[maybe_unused]] std::array<int, 2> const& joint_angle) { return ""; }
-
-struct robot_arm {
-  robot_arm(std::string port, uint32_t baudrate,
-            serial::Timeout timeout = serial::Timeout::simpleTimeout(10000))
-      : serial_(std::move(port), baudrate, std::move(timeout)) {}
-
-  tl::expected<bin_occupancy, std::string> operator()(std::vector<joint_angles> const& path) const {
-    if (!serial_.isOpen()) {
-      return tl::make_unexpected("Error opening serial port");
-    }
-    // Convert the angles to degrees for arduino, rounded
-    std::vector<std::array<int, 2>> path_d;
-    std::ranges::transform(
-        path, std::back_inserter(path_d), [](auto const& j) -> std::array<int, 2> {
-          return {static_cast<int>(to_radians(j[0])), static_cast<int>(to_radians(j[1]))};
-        });
-    // Parse angles into string, maybe
-    // shoulder, shoulder\n
-    // as in
-    // 176, 25\n
-    // but it wouldn't surprise me if a header byte is needed, in which case
-    // {176, 25} might be just as well
-    std::ranges::for_each(
-        path_d, [this](auto const& joint_angle) { serial_.write(serialize(joint_angle)); });
-    try {
-      // Send read sensor command so there isn't ambiguity about return values from the serial
-      serial_.write("this will be dependent on the parsing format");
-      auto const result = std::stoi(serial_.readline());
-      if (result == 1) {
-        return bin_occupancy::OCCUPIED;
-      }
-      return bin_occupancy::EMPTY;
-    } catch (std::invalid_argument const& e) {
-      return tl::make_unexpected("Invalid argument from serial port");
-    } catch (std::out_of_range const& e) {
-      return tl::make_unexpected("Out of range from serial port");
-    }
-  }
-
-  mutable serial::Serial serial_;
-};
-
 struct bounds_checked_layout {
   template <class Extents>
-  struct mapping : stdex::layout_right::mapping<Extents> {
+  struct mapping : std::layout_right::mapping<Extents> {
     using extents_type = Extents;
     using size_type = typename extents_type::size_type;
-    using base_t = stdex::layout_right::mapping<Extents>;
+    using base_t = std::layout_right::mapping<Extents>;
     using base_t::base_t;
     size_type operator()(auto... idxs) const {
       [&]<size_t... Is>(std::index_sequence<Is...>) {
@@ -141,43 +95,60 @@ struct bounds_checked_layout {
   };
 };
 
-// Bin checker for single arm sync should
-//   reference access(data_handle_type ptr, std::ptrdiff_t offset) const {
-//    auto const goal = ptr[offset];
-//    // give goal to robot arm
-//    // return what the robot arm sensed
-//
-
-// TODO: This should still be shown somehow to demonstrate that no stack/heap memory
-//        is actually needed
-// struct bin_checker {
-//   using element_type = bin_state;
-//   using reference = std::future<bin_state>;
-//   using data_handle_type = robot_arm*;
-//
-//   reference access(data_handle_type ptr, std::ptrdiff_t offset) const {
-//     // We know ptr will be valid asynchronously because we construct it on the
-//     // stack of main. In real code we might want to use a shared_ptr or
-//     // something
-//     return std::async([=] {
-//       return bin_state{ptr->is_bin_occupied(static_cast<int>(offset)),
-//                        offset_to_coord(static_cast<int>(offset))};
-//     });
-//   }
-// };
-
-// Also need a view to get the coordinates of a bin from json
-
-// using bin_view = stdex::mdspan<bin_state,
-//                                // We're treating our 6 bins as a 3x2 matrix
-//                                stdex::extents<uint32_t, 3, 2>,
-//                                // Our layout should do bounds-checking
-//                                bounds_checked_layout,
-//                                // Our accessor should tell the robot to
-//                                // asynchronously access the bin
-//                                bin_checker>;
-
 using bin_grid_t = std::mdspan<position_t, std::extents<std::size_t, 2, 3>, bounds_checked_layout>;
+
+template<typename Arbiter>
+struct bin_checker_t {
+  using element_type = tl::expected<bin_state, std::string>;
+  using reference = element_type;
+  using data_handle_type = position_t*;
+  using size_type = std::size_t;
+  
+  explicit bin_checker_t(Arbiter* checker):
+    checker_{std::move(checker)}{}
+
+  reference access(data_handle_type bin_positions, size_type offset) const {
+    auto const goal = bin_positions[offset];
+    auto const state_maybe = (*checker_)(goal);
+    if (!state_maybe.has_value()) {
+      return tl::make_unexpected(std::string{state_maybe.error()});
+    }
+    return bin_state{state_maybe.value(), goal};
+  }
+private:
+  Arbiter* checker_;
+};
+
+template <typename Arbiter>
+using bin_view_t = std::mdspan<tl::expected<bin_state, std::string>,
+                               // We're treating our 6 bins as a 2x3 matrix
+                               std::extents<std::size_t, 2, 3>,
+                               // Our layout should do bounds-checking
+                               bounds_checked_layout,
+                               // Our accessor should tell the robot to
+                               // asynchronously access the bin
+                               bin_checker_t<Arbiter>>;
+
+std::ostream& operator<<(std::ostream& os, tl::expected<bin_state, std::string> const& bin_maybe) {
+  if (!bin_maybe.has_value()) {
+  os << bin_maybe.error();
+    return os;
+  }
+  auto const& state = bin_maybe.value();
+  os << "(" << state.location.x << ", " << state.location.y << ") = ";
+  switch (state.occupancy) {
+    case bin_occupancy::OCCUPIED:
+      std::cout << "OCCUPIED";
+      break;
+    case bin_occupancy::EMPTY:
+      std::cout << "EMPTY";
+      break;
+  }
+  return os;
+}
+
+double to_radians(double degrees) { return degrees * std::numbers::pi / 180.; }
+double to_degrees(double radians) { return radians * 180. / std::numbers::pi; }
 
 bool near(double a, double b, double tolerance = 0.00001) { return std::abs(a - b) < tolerance; }
 
@@ -369,6 +340,67 @@ std::vector<position_t> available_goals(bin_grid_t bins, kinematics_t arm, posit
   return goals;
 }
 
+std::string serialize([[maybe_unused]] std::array<int, 2> const& joint_angle) { return ""; }
+
+struct hardware_interface {
+  virtual ~hardware_interface() = default;
+  virtual tl::expected<bin_occupancy, std::string> operator()(
+      std::vector<joint_angles> const& path) const = 0;
+};
+
+struct mock_hardware : public hardware_interface {
+  explicit mock_hardware(kinematics_t arm):arm_(std::move(arm)){}
+  tl::expected<bin_occupancy, std::string> operator()(std::vector<joint_angles> const& path) const {
+    std::cout << "x, y\n";
+    std::ranges::for_each(path, [&](auto const& j) {
+      auto const p = forward_kinematics(j, arm_);
+      std::cout << p.x << ", " << p.y << "\n";
+    });
+    return bin_occupancy::EMPTY;
+  };
+  kinematics_t arm_;
+};
+
+struct hardware : public hardware_interface {
+  hardware(std::string port, uint32_t baudrate,
+           serial::Timeout timeout = serial::Timeout::simpleTimeout(10000))
+      : serial_(std::move(port), baudrate, std::move(timeout)) {}
+
+  tl::expected<bin_occupancy, std::string> operator()(std::vector<joint_angles> const& path) const {
+    if (!serial_.isOpen()) {
+      return tl::make_unexpected("Error opening serial port");
+    }
+    // Convert the angles to degrees for arduino, rounded
+    std::vector<std::array<int, 2>> path_d;
+    std::ranges::transform(
+        path, std::back_inserter(path_d), [](auto const& j) -> std::array<int, 2> {
+          return {static_cast<int>(to_radians(j[0])), static_cast<int>(to_radians(j[1]))};
+        });
+    // Parse angles into string, maybe
+    // shoulder, shoulder\n
+    // as in
+    // 176, 25\n
+    // but it wouldn't surprise me if a header byte is needed, in which case
+    // {176, 25} might be just as well
+    std::ranges::for_each(
+        path_d, [this](auto const& joint_angle) { serial_.write(serialize(joint_angle)); });
+    try {
+      // Send read sensor command so there isn't ambiguity about return values from the serial
+      serial_.write("this will be dependent on the parsing format");
+      auto const result = std::stoi(serial_.readline());
+      if (result == 1) {
+        return bin_occupancy::OCCUPIED;
+      }
+      return bin_occupancy::EMPTY;
+    } catch (std::invalid_argument const& e) {
+      return tl::make_unexpected("Invalid argument from serial port");
+    } catch (std::out_of_range const& e) {
+      return tl::make_unexpected("Out of range from serial port");
+    }
+  }
+
+  mutable serial::Serial serial_;
+};
 // TODO: robot should return to waypoint after reading state
 // TODO: on start up, robots should go to home
 // TODO: on shut down, robots should go to home
@@ -390,9 +422,8 @@ std::vector<position_t> available_goals(bin_grid_t bins, kinematics_t arm, posit
 //      - generate path to home
 //    - command path
 
-bool elbow_up;
 struct arbiter_single {
-  arbiter_single()
+  arbiter_single(std::unique_ptr<hardware_interface> hw)
       : model_{"left arm",
                {0.150, 0.160 - 0.0085},  // 8.5 mm is the offset of the light detector from the end
                                          // of the forearm
@@ -401,15 +432,15 @@ struct arbiter_single {
                false},                   // left arm should be elbow down from it's perspective
         state_{0., 0.},
         home_{forward_kinematics(state_, model_)},
-        arm_{"/dev/ttyACM0", 9600} {}
+        command_path_{std::move(hw)} {}
 
   tl::expected<bin_occupancy, std::string> operator()(position_t const& goal) {
     auto const near_goal = generate_waypoint(goal, model_);
     auto const goto_goal = inverse_kinematics(plan_cartesian({home_, near_goal, goal}), model_);
-    auto const sensor_reading_maybe = arm_(goto_goal);
+    auto const sensor_reading_maybe = (*command_path_)(goto_goal);
     // Out current cartesian position should be at the goal
     auto const goto_home = inverse_kinematics(plan_cartesian({goal, near_goal, home_}), model_);
-    arm_(goto_home);
+    (*command_path_)(goto_home);
     return sensor_reading_maybe;
   }
 
@@ -417,7 +448,7 @@ struct arbiter_single {
   kinematics_t model_;
   joint_angles state_;
   position_t home_;
-  robot_arm arm_;
+  std::unique_ptr<hardware_interface> command_path_;
 };
 
 // goal arbiter, dual arm partitioned
@@ -441,18 +472,31 @@ struct arbiter_single {
 //   - command path
 //
 
-auto print_state = [](bin_state const& state) {
-  std::cout << "Bin at (" << state.coordinate.x << ", " << state.coordinate.y << ") is ";
-  switch (state.occupancy) {
-    case bin_occupancy::OCCUPIED:
-      std::cout << "OCCUPIED";
-      break;
-    case bin_occupancy::EMPTY:
-      std::cout << "EMPTY";
-      break;
-  }
-  std::cout << "\n";
-};
+// Bin checker for single arm sync should
+//   reference access(data_handle_type ptr, std::ptrdiff_t offset) const {
+//    auto const goal = ptr[offset];
+//    // give goal to robot arm
+//    // return what the robot arm sensed
+//
+
+// TODO: This should still be shown somehow to demonstrate that no stack/heap memory
+//        is actually needed
+// struct bin_checker {
+//   using element_type = bin_state;
+//   using reference = std::future<bin_state>;
+//   using data_handle_type = robot_arm*;
+//
+//   reference access(data_handle_type ptr, std::ptrdiff_t offset) const {
+//     // We know ptr will be valid asynchronously because we construct it on the
+//     // stack of main. In real code we might want to use a shared_ptr or
+//     // something
+//     return std::async([=] {
+//       return bin_state{ptr->is_bin_occupied(static_cast<int>(offset)),
+//                        offset_to_coord(static_cast<int>(offset))};
+//     });
+//   }
+// };
+
 
 int main() {
   std::ifstream bin_file{"src/spanny2/config/bin_config.json"};
@@ -521,6 +565,15 @@ int main() {
     auto const goals = available_goals(bin_grid, left_arm, other_goal);
     std::ranges::for_each(goals, [](auto const& p) { std::cout << p.x << ", " << p.y << "\n"; });
   });
+
+  auto arbiter = arbiter_single{std::make_unique<mock_hardware>(left_arm)};
+  auto bin_checker = bin_checker_t{&arbiter};
+  auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
+  for (auto i = 0u; i != bins.extent(0); ++i) {
+    for (auto j = 0u; j != bins.extent(1); ++j) {
+      std::cout << bins(i, j) << "\n";
+    }
+  }
   return 0;
 
   // auto arm = robot_arm{"/dev/ttyACM0", 9600};
