@@ -2,24 +2,102 @@
 #include "json.hpp"
 #include "mdspan.hpp"
 #include "serial/serial.h"
+#include <atomic>
 #include <cmath>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <numbers>
+#include <queue>
+#include <random>
 #include <ranges>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace stdex = std::experimental;
 using json = nlohmann::json;
 enum struct bin_occupancy { OCCUPIED, EMPTY };
+/**
+ * @brief Thread-safe queue. Particularly useful when multiple threads need to write to and/or read
+ * from a queue.
+ */
+template <typename T>
+class thread_safe_queue {
+  std::queue<T> queue_;
+  std::condition_variable cv_;
+  mutable std::mutex mutex_;
+
+ public:
+  /**
+   * @brief Get the size of the queue
+   * @return Queue size
+   */
+  [[nodiscard]] auto size() const noexcept {
+    auto const lock = std::lock_guard(mutex_);
+    return queue_.size();
+  }
+
+  /**
+   * @brief Check if the queue is empty
+   * @return True if the queue is empty, otherwise false
+   */
+  [[nodiscard]] auto empty() const noexcept {
+    auto const lock = std::lock_guard(mutex_);
+    return queue_.empty();
+  }
+
+  /**
+   * @brief Push data into the queue
+   * @param value Data to push into the queue
+   */
+  template <typename U>
+  void push(U&& value) noexcept {
+    {
+      auto const lock = std::lock_guard(mutex_);
+      queue_.push(std::forward<U>(value));
+    }
+    cv_.notify_one();
+  }
+
+  /**
+   * @brief Clear the queue
+   */
+  void clear() noexcept {
+    auto const lock = std::lock_guard(mutex_);
+
+    // Swap queue with an empty queue of the same type to ensure queue_ is left in a
+    // default-constructed state
+    decltype(queue_)().swap(queue_);
+  }
+
+  /**
+   * @brief Wait for given duration then pop from the queue and return the element
+   * @param wait_time Maximum time to wait for queue to be non-empty
+   * @return Data popped from the queue or error
+   */
+  [[nodiscard]] auto pop(std::chrono::nanoseconds wait_time = {}) -> std::optional<T> {
+    auto lock = std::unique_lock(mutex_);
+
+    // If queue is empty after wait_time, return nothing
+    if (!cv_.wait_for(lock, wait_time, [this] { return !queue_.empty(); })) return std::nullopt;
+
+    auto value = std::move(queue_.front());
+    queue_.pop();
+    return value;
+  }
+};
 
 struct position_t {
   double x, y;
 };
+
+std::ostream& operator<<(std::ostream& os, position_t p) {
+  os << "{" << p.x << ", " << p.y << "}";
+  return os;
+}
 
 struct bin_state {
   bin_occupancy occupancy;
@@ -165,6 +243,10 @@ bool near(double a, double b, double tolerance = 0.00001) { return std::abs(a - 
 
 bool same(joint_angles const& lhs, joint_angles const& rhs) {
   return near(lhs[0], rhs[0]) && near(lhs[1], rhs[1]);
+}
+
+bool same(position_t const& lhs, position_t const& rhs) {
+  return near(lhs.x, rhs.x) && near(lhs.y, rhs.y);
 }
 
 // Kinematics for left arm
@@ -351,6 +433,20 @@ struct hardware_interface {
 struct mock_hardware : public hardware_interface {
   explicit mock_hardware(kinematics_t model) : model_(std::move(model)) {}
   tl::expected<bin_occupancy, std::string> operator()(std::vector<joint_angles> const& path) const {
+    // Seed with a real random value, if available
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    // Generate a random number between min_ms and max_ms
+    std::uniform_int_distribution<> dist(0, 1000);
+
+    // Get a random sleep duration in milliseconds
+    int sleep_duration = dist(gen);
+
+    std::cout << "Sleeping for " << sleep_duration << " milliseconds." << std::endl;
+
+    // Sleep for the random duration
+    // std::this_thread::sleep_for(std::chrono::milliseconds(sleep_duration));
     std::cout << model_.description << "\n";
     std::cout << "x, y\n";
     std::ranges::for_each(path, [&](auto const& j) {
@@ -402,26 +498,6 @@ struct hardware : public hardware_interface {
 
   mutable serial::Serial serial_;
 };
-// TODO: robot should return to waypoint after reading state
-// TODO: on start up, robots should go to home
-// TODO: on shut down, robots should go to home
-// TODO: on the synchronous ones, should the value be reported after the moves are done?
-// TODO: in arduino, need a joint angle to pwm function
-//
-// goal arbiter, single arm
-// - goal comes in, add to queue
-// - if robot is not available, wait until it is done with its current goal
-// - now that robot is available
-//    - generate path to goal
-//    - command path
-//      - send joint command
-//      - wait for arm to report success
-//    - read sensor
-//      - report value
-//    - generate path to home
-//      - generate path to waypoint
-//      - generate path to home
-//    - command path
 
 struct arbiter_single {
   arbiter_single(kinematics_t model, std::unique_ptr<hardware_interface> hw)
@@ -478,34 +554,11 @@ struct arbiter_dual {
   std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
 };
 
-struct arbiter_dual_async {
-  arbiter_dual_async(kinematics_t model_left, std::unique_ptr<hardware_interface> hw_left,
-                     kinematics_t model_right, std::unique_ptr<hardware_interface> hw_right)
-      : model_{{std::move(model_left), std::move(model_right)}},
-        home_{{model_[0].description, forward_kinematics({0., 0.}, model_[0])},
-              {model_[1].description, forward_kinematics({0., 0.}, model_[1])}} {
-    hw_.emplace(model_[0].description, std::move(hw_left));
-    hw_.emplace(model_[1].description, std::move(hw_right));
-  }
-
-  std::future<tl::expected<bin_state, std::string>> operator()(
-      [[maybe_unused]] position_t const& goal) {
-    return std::async([=] {
-      return tl::expected<bin_state, std::string>{
-          tl::make_unexpected(std::string{"Unimplemented"})};
-    });
-  }
-
- private:
-  std::array<kinematics_t, 2> model_;
-  std::map<std::string, position_t> home_;
-  std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
-};
-// goal arbiter, dual arm partitioned
-// - goal comes in
-// - add goal to the queue of the correct robot
-// - goal arbiter single arm
-
+// TODO: robot should return to waypoint after reading state
+// TODO: on start up, robots should go to home
+// TODO: on shut down, robots should go to home
+// TODO: on the synchronous ones, should the value be reported after the moves are done?
+// TODO: in arduino, need a joint angle to pwm function
 // goal arbiter, dual arm non-partitioned
 // - goal comes in, add to set
 //
@@ -521,6 +574,78 @@ struct arbiter_dual_async {
 //   - generate path to waypoint
 //   - command path
 //
+struct arbiter_dual_async {
+  using result_type = tl::expected<bin_state, std::string>;
+  arbiter_dual_async(kinematics_t model_left, std::unique_ptr<hardware_interface> hw_left,
+                     kinematics_t model_right, std::unique_ptr<hardware_interface> hw_right,
+                     bin_grid_t bins)
+      : model_{{std::move(model_left), std::move(model_right)}},
+        bins_{std::move(bins)},
+        home_{{model_[0].description, forward_kinematics({0., 0.}, model_[0])},
+              {model_[1].description, forward_kinematics({0., 0.}, model_[1])}} {
+    hw_.emplace(model_[0].description, std::move(hw_left));
+    hw_.emplace(model_[1].description, std::move(hw_right));
+    left_engine_ = std::jthread{[this] {
+      while (!done_) {
+        // get the goal of the other arm
+        auto const other_goal = right_goal();
+        // Get the list of available goals
+        auto const allowed_goals = available_goals(bins_, model_[0], other_goal);
+        // Check if any of the goals on the queue are available
+        auto work_maybe = queue_.pop();
+        if (work_maybe.has_value()) {
+          // std::cout << "work" << std::endl;
+          auto& [goal, task] = work_maybe.value();
+          // std::cout << goal << std::endl;
+          // If the goal is allowed, do it
+          if (std::ranges::any_of(allowed_goals,
+                                  [&](auto const& allowed) { return same(goal, allowed); })) {
+            // std::cout << "  DO  " << std::endl;
+            task(goal, "my arm");
+          } else {
+            // put it back
+            // std::cout << " back " << std::endl;
+            queue_.push(std::move(work_maybe.value()));
+          }
+        } else {
+          // std::cout << "no work" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
+    }};
+  }
+
+  ~arbiter_dual_async() { done_ = true; }
+
+  std::future<result_type> operator()([[maybe_unused]] position_t goal) {
+    std::packaged_task<result_type(position_t, std::string)> task(
+        [this](auto const& goal_bin, auto const& arm) {
+          std::string goal_s = std::to_string(goal_bin.x) + ", " + std::to_string(goal_bin.y) + " ";
+          return result_type{tl::make_unexpected(goal_s + arm)};
+        });
+    std::future<result_type> result = task.get_future();
+    queue_.push(std::make_pair(goal, std::move(task)));
+    return result;
+  }
+
+  position_t right_goal() { return {0., 0.}; }
+
+  // result_type is_bin_occupied([[maybe_unused]] position_t goal){
+  // Check if an arm is available
+  // Check if available arm can service the goal
+  // }
+
+ private:
+  std::array<kinematics_t, 2> model_;
+  bin_grid_t bins_;
+  std::map<std::string, position_t> home_;
+  std::map<std::string, position_t> goal_;
+  std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
+  thread_safe_queue<std::pair<position_t, std::packaged_task<result_type(position_t, std::string)>>>
+      queue_;
+  std::atomic<bool> done_ = false;
+  std::jthread left_engine_;
+};
 
 // Bin checker for single arm sync should
 //   reference access(data_handle_type ptr, std::ptrdiff_t offset) const {
@@ -546,6 +671,10 @@ struct arbiter_dual_async {
 //     });
 //   }
 // };
+template <typename R>
+bool is_ready(std::future<R> const& f) {
+  return f.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+}
 
 int main() {
   std::ifstream bin_file{"src/spanny2/config/bin_config.json"};
@@ -560,7 +689,7 @@ int main() {
                          });
 
   /* TEST 2x3 mdspan */
-  // bin_grid_t bin_grid{bin_positions.data()};
+  bin_grid_t bin_grid{bin_positions.data()};
   // for (auto i = 0u; i < bin_grid.extent(0); ++i) {
   //   for (auto j = 0u; j < bin_grid.extent(1); ++j) {
   //     auto const p = bin_grid(i, j);
@@ -649,8 +778,9 @@ int main() {
   // }
   /* TEST DUAL ARM ASYNCHRONOUS */
   {
-    auto arbiter = arbiter_dual_async{left_arm, std::make_unique<mock_hardware>(left_arm),
-                                      right_arm, std::make_unique<mock_hardware>(right_arm)};
+    auto arbiter =
+        arbiter_dual_async{left_arm, std::make_unique<mock_hardware>(left_arm), right_arm,
+                           std::make_unique<mock_hardware>(right_arm), bin_grid};
     auto bin_checker = bin_checker_async_t{&arbiter};
     auto bins = bin_view_async_t(bin_positions.data(), {}, bin_checker);
     std::vector<std::future<tl::expected<bin_state, std::string>>> futures;
@@ -660,12 +790,22 @@ int main() {
       }
     }
     // Let the arms resolve the moves
-    for (auto const& future : futures) {
-      future.wait();
-    }
+    // for (auto const& future : futures) {
+    //   future.wait();
+    // }
 
-    for (auto& future : futures) {
-      std::cout << future.get() << "\n";
+    // for (auto& future : futures) {
+    //   std::cout << future.get() << "\n";
+    // }
+
+    while (!futures.empty()) {
+      std::erase_if(futures, [](auto& future) {
+        if (is_ready(future)) {
+          std::cout << future.get() << "\n";
+          return true;  // Remove future if ready
+        }
+        return false;  // Keep future if not ready
+      });
     }
   }
   return 0;
