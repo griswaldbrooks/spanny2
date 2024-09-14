@@ -474,13 +474,14 @@ struct hardware : public hardware_interface {
       return tl::make_unexpected("Error opening serial port");
     }
     // Convert the angles to degrees for arduino, rounded
-    std::vector<std::array<int, 2>> path_d;
+    std::vector<std::array<int, 2>> path_degrees;
     std::ranges::transform(
-        path, std::back_inserter(path_d), [](auto const& j) -> std::array<int, 2> {
-          return {static_cast<int>(to_radians(j[0])), static_cast<int>(to_radians(j[1]))};
+        path, std::back_inserter(path_degrees), [](auto const& j) -> std::array<int, 2> {
+          return {static_cast<int>(to_degrees(j[0])), static_cast<int>(to_degrees(j[1]))};
         });
-    std::ranges::for_each(
-        path_d, [this](auto const& joint_angle) { serial_.write(serialize_mock(joint_angle)); });
+    std::ranges::for_each(path_degrees, [this](auto const& joint_angle) {
+      serial_.write(serialize_mock(joint_angle));
+    });
     try {
       // Send read sensor command so there isn't ambiguity about return values from the serial
       serial_.write("this will be dependent on the parsing format");
