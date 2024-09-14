@@ -319,7 +319,8 @@ std::vector<joint_angles> lerp(joint_angles const& start, joint_angles const& go
 }
 
 position_t generate_waypoint(position_t const& p, kinematics_t const& model) {
-  auto const offset = std::copysign(0.02, model.origin.x - p.x);
+  constexpr double waypoint_offset = 0.02;
+  auto const offset = std::copysign(waypoint_offset, model.origin.x - p.x);
   return {p.x + offset, p.y};
 }
 
@@ -420,7 +421,15 @@ std::vector<position_t> available_goals(bin_grid_t bins, kinematics_t arm, posit
   return goals;
 }
 
-std::string serialize([[maybe_unused]] std::array<int, 2> const& joint_angle) { return ""; }
+std::string serialize_mock([[maybe_unused]] std::array<int, 2> const& joint_angle) { return ""; }
+
+std::string serialize_newline(std::array<int, 2> const& joint_angle) {
+  return std::to_string(joint_angle[0]) + ", " + std::to_string(joint_angle[1]) + "\n";
+}
+
+std::string serialize_brace(std::array<int, 2> const& joint_angle) {
+  return "{" + std::to_string(joint_angle[0]) + ", " + std::to_string(joint_angle[1]) + "}";
+}
 
 struct hardware_interface {
   virtual ~hardware_interface() = default;
@@ -470,14 +479,8 @@ struct hardware : public hardware_interface {
         path, std::back_inserter(path_d), [](auto const& j) -> std::array<int, 2> {
           return {static_cast<int>(to_radians(j[0])), static_cast<int>(to_radians(j[1]))};
         });
-    // Parse angles into string, maybe
-    // shoulder, shoulder\n
-    // as in
-    // 176, 25\n
-    // but it wouldn't surprise me if a header byte is needed, in which case
-    // {176, 25} might be just as well
     std::ranges::for_each(
-        path_d, [this](auto const& joint_angle) { serial_.write(serialize(joint_angle)); });
+        path_d, [this](auto const& joint_angle) { serial_.write(serialize_mock(joint_angle)); });
     try {
       // Send read sensor command so there isn't ambiguity about return values from the serial
       serial_.write("this will be dependent on the parsing format");
@@ -556,14 +559,14 @@ struct arbiter_dual {
 };
 
 tl::expected<bin_state, std::string> is_bin_occupied(position_t const& goal,
-                                                     kinematics_t const& model, position_t* state,
-                                                     hardware_interface* hw) {
+                                                     kinematics_t const& model, position_t& state,
+                                                     hardware_interface& hw) {
   auto const near_goal = generate_waypoint(goal, model);
-  auto const goto_goal = inverse_kinematics(plan_cartesian({*state, near_goal, goal}), model);
-  auto const sensor_reading_maybe = (*hw)(goto_goal);
+  auto const goto_goal = inverse_kinematics(plan_cartesian({state, near_goal, goal}), model);
+  auto const sensor_reading_maybe = hw(goto_goal);
   auto const goto_waypoint = inverse_kinematics(plan_cartesian({goal, near_goal}), model);
-  (*hw)(goto_waypoint);
-  *state = near_goal;
+  hw(goto_waypoint);
+  state = near_goal;
   if (!sensor_reading_maybe.has_value()) {
     return tl::make_unexpected(sensor_reading_maybe.error());
   }
@@ -573,7 +576,7 @@ tl::expected<bin_state, std::string> is_bin_occupied(position_t const& goal,
 struct arbiter_dual_async {
   using result_type = tl::expected<bin_state, std::string>;
   using task_type = std::packaged_task<result_type(position_t const&, kinematics_t const&,
-                                                   position_t*, hardware_interface*)>;
+                                                   position_t&, hardware_interface&)>;
   arbiter_dual_async(kinematics_t model_left, std::unique_ptr<hardware_interface> hw_left,
                      kinematics_t model_right, std::unique_ptr<hardware_interface> hw_right,
                      bin_grid_t bins)
@@ -588,63 +591,82 @@ struct arbiter_dual_async {
     // Command the robots to home
     (*hw_.at(model_[0].description))({{0., 0.}});
     (*hw_.at(model_[1].description))({{0., 0.}});
-    left_engine_ = std::jthread{[this] {
-      while (!done_) {
-        // get the goal of the other arm
-        auto const other_goal = right_goal();
-        // Get the list of available goals
-        auto const allowed_goals = available_goals(bins_, model_[0], other_goal);
-        // Check if any of the goals on the queue are available
-        auto work_maybe = queue_.pop();
-        if (work_maybe.has_value()) {
-          auto& [goal, task] = work_maybe.value();
-          // If the goal is allowed, do it
-          if (std::ranges::any_of(allowed_goals,
-                                  [&](auto const& allowed) { return same(goal, allowed); })) {
-            left_goal(goal);
-            task(goal, model_[0], &left_state_, hw_.at(model_[0].description).get());
-          } else {
-            // put it back
-            queue_.push(std::move(work_maybe.value()));
+    left_engine_ = std::jthread{[this](std::stop_token stoken) {
+      try {
+        while (!stoken.stop_requested()) {
+          // get the goal of the other arm
+          auto const other_goal = right_goal();
+          // Get the list of available goals
+          auto const allowed_goals = available_goals(bins_, model_[0], other_goal);
+          // Check if any of the goals on the queue are available
+          auto work_maybe = queue_.pop(std::chrono::milliseconds{500});
+          if (work_maybe.has_value()) {
+            auto& [goal, task] = work_maybe.value();
+            // If the goal is allowed, do it
+            if (std::ranges::any_of(allowed_goals,
+                                    [&](auto const& allowed) { return same(goal, allowed); })) {
+              left_goal(goal);
+              task(goal, model_[0], left_state_, *hw_.at(model_[0].description).get());
+              // Reset to indicate that the goal is not being worked on
+              left_goal({0., 0.});
+            } else {
+              // put it back
+              queue_.push(std::move(work_maybe.value()));
+            }
           }
         }
-        // Reset to indicate that the goal is not being worked on
-        left_goal({0., 0.});
+      } catch (std::exception const& e) {
+        std::cerr << e.what() << std::endl;
       }
     }};
-    right_engine_ = std::jthread{[this] {
-      while (!done_) {
-        // get the goal of the other arm
-        auto const other_goal = left_goal();
-        // Get the list of available goals
-        auto const allowed_goals = available_goals(bins_, model_[1], other_goal);
-        // Check if any of the goals on the queue are available
-        auto work_maybe = queue_.pop();
-        if (work_maybe.has_value()) {
-          auto& [goal, task] = work_maybe.value();
-          // If the goal is allowed, do it
-          if (std::ranges::any_of(allowed_goals,
-                                  [&](auto const& allowed) { return same(goal, allowed); })) {
-            right_goal(goal);
-            task(goal, model_[1], &right_state_, hw_.at(model_[1].description).get());
-          } else {
-            // put it back
-            queue_.push(std::move(work_maybe.value()));
+    right_engine_ = std::jthread{[this](std::stop_token stoken) {
+      try {
+        while (!stoken.stop_requested()) {
+          // get the goal of the other arm
+          auto const other_goal = left_goal();
+          // Get the list of available goals
+          auto const allowed_goals = available_goals(bins_, model_[1], other_goal);
+          // Check if any of the goals on the queue are available
+          auto work_maybe = queue_.pop(std::chrono::milliseconds{500});
+          if (work_maybe.has_value()) {
+            auto& [goal, task] = work_maybe.value();
+            // If the goal is allowed, do it
+            if (std::ranges::any_of(allowed_goals,
+                                    [&](auto const& allowed) { return same(goal, allowed); })) {
+              right_goal(goal);
+              task(goal, model_[1], right_state_, *hw_.at(model_[1].description).get());
+              // Reset to indicate that the goal is not being worked on
+              right_goal({0., 0.});
+            } else {
+              // put it back
+              queue_.push(std::move(work_maybe.value()));
+            }
           }
         }
-        // Reset to indicate that the goal is not being worked on
-        right_goal({0., 0.});
+      } catch (std::exception const& e) {
+        std::cerr << e.what() << std::endl;
       }
     }};
   }
 
   ~arbiter_dual_async() {
-    done_ = true;
-    left_engine_.join();
-    right_engine_.join();
+    // Join the threads to be sure that they aren't commanding
+    // the robots before commanding them to go home
+    left_engine_.request_stop();
+    right_engine_.request_stop();
+    if (left_engine_.joinable()) {
+      left_engine_.join();
+    }
+    if (right_engine_.joinable()) {
+      right_engine_.join();
+    }
     // Command the arms to home
-    (*hw_.at(model_[0].description))({{0., 0.}});
-    (*hw_.at(model_[1].description))({{0., 0.}});
+    auto const gohome_left = inverse_kinematics(
+        plan_cartesian({left_state_, home_.at(model_[0].description)}), model_[0]);
+    (*hw_.at(model_[0].description))(gohome_left);
+    auto const gohome_right = inverse_kinematics(
+        plan_cartesian({right_state_, home_.at(model_[1].description)}), model_[1]);
+    (*hw_.at(model_[1].description))(gohome_right);
   }
 
   std::future<result_type> operator()(position_t goal) {
@@ -681,7 +703,6 @@ struct arbiter_dual_async {
   std::map<std::string, position_t> goal_;
   std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
   thread_safe_queue<std::pair<position_t, task_type>> queue_;
-  std::atomic<bool> done_ = false;
   std::mutex left_mutex_;
   std::mutex right_mutex_;
   position_t left_state_;
