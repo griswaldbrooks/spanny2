@@ -438,7 +438,7 @@ struct mock_hardware : public hardware_interface {
     std::mt19937 gen(rd());
 
     // Generate a random number between min_ms and max_ms
-    std::uniform_int_distribution<> dist(0, 1000);
+    std::uniform_int_distribution<> dist(500, 1000);
 
     // Get a random sleep duration in milliseconds
     int sleep_duration = dist(gen);
@@ -446,7 +446,7 @@ struct mock_hardware : public hardware_interface {
     std::cout << "Sleeping for " << sleep_duration << " milliseconds." << std::endl;
 
     // Sleep for the random duration
-    // std::this_thread::sleep_for(std::chrono::milliseconds(sleep_duration));
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_duration));
     std::cout << model_.description << "\n";
     std::cout << "x, y\n";
     std::ranges::for_each(path, [&](auto const& j) {
@@ -559,34 +559,39 @@ struct arbiter_dual {
 // TODO: on shut down, robots should go to home
 // TODO: on the synchronous ones, should the value be reported after the moves are done?
 // TODO: in arduino, need a joint angle to pwm function
-// goal arbiter, dual arm non-partitioned
-// - goal comes in, add to set
-//
-// - when an arm becomes available
-//   - get the current goal of the other arm
-//   - get the list of available goals
-//   - check if any of the available goals are in the goal set
-//   - if there is more than one, choose one that is closest to current position
-//   - generate path to goal
-//   - command path
-//   - read sensor, report async?
-//   - get waypoint next to goal
-//   - generate path to waypoint
-//   - command path
-//
+tl::expected<bin_state, std::string> is_bin_occupied(position_t const& goal,
+                                                     kinematics_t const& model, position_t* state,
+                                                     hardware_interface* hw) {
+  auto const near_goal = generate_waypoint(goal, model);
+  auto const goto_goal = inverse_kinematics(plan_cartesian({*state, near_goal, goal}), model);
+  auto const sensor_reading_maybe = (*hw)(goto_goal);
+  auto const goto_waypoint = inverse_kinematics(plan_cartesian({goal, near_goal}), model);
+  (*hw)(goto_waypoint);
+  *state = near_goal;
+  if (!sensor_reading_maybe.has_value()) {
+    return tl::make_unexpected(sensor_reading_maybe.error());
+  }
+  return bin_state{sensor_reading_maybe.value(), goal};
+}
+
 struct arbiter_dual_async {
   using result_type = tl::expected<bin_state, std::string>;
+  using task_type = std::packaged_task<result_type(position_t const&, kinematics_t const&,
+                                                   position_t*, hardware_interface*)>;
   arbiter_dual_async(kinematics_t model_left, std::unique_ptr<hardware_interface> hw_left,
                      kinematics_t model_right, std::unique_ptr<hardware_interface> hw_right,
                      bin_grid_t bins)
       : model_{{std::move(model_left), std::move(model_right)}},
         bins_{std::move(bins)},
         home_{{model_[0].description, forward_kinematics({0., 0.}, model_[0])},
-              {model_[1].description, forward_kinematics({0., 0.}, model_[1])}} {
+              {model_[1].description, forward_kinematics({0., 0.}, model_[1])}},
+        left_state_{forward_kinematics({0., 0.}, model_[0])},
+        right_state_{forward_kinematics({0., 0.}, model_[1])} {
     hw_.emplace(model_[0].description, std::move(hw_left));
     hw_.emplace(model_[1].description, std::move(hw_right));
     left_engine_ = std::jthread{[this] {
       while (!done_) {
+        // while (false) {
         // get the goal of the other arm
         auto const other_goal = right_goal();
         // Get the list of available goals
@@ -601,24 +606,27 @@ struct arbiter_dual_async {
           // If the goal is allowed, do it
           if (std::ranges::any_of(allowed_goals,
                                   [&](auto const& allowed) { return same(goal, allowed); })) {
-            std::cout << "left do" << std::endl;
+            std::cout << "left do = " << goal << std::endl;
             left_goal(goal);
-            task(goal, "left arm");
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            task(goal, model_[0], &left_state_, hw_.at(model_[0].description).get());
+            // std::this_thread::sleep_for(std::chrono::seconds(1));
           } else {
             // put it back
             std::cout << "left back " << std::endl;
             queue_.push(std::move(work_maybe.value()));
           }
         } else {
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
           std::cout << "left no work" << std::endl;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         // Reset to indicate that the goal is not being worked on
         left_goal({0., 0.});
       }
     }};
     right_engine_ = std::jthread{[this] {
       while (!done_) {
+        // while (false) {
         // get the goal of the other arm
         auto const other_goal = left_goal();
         // Get the list of available goals
@@ -633,18 +641,19 @@ struct arbiter_dual_async {
           // If the goal is allowed, do it
           if (std::ranges::any_of(allowed_goals,
                                   [&](auto const& allowed) { return same(goal, allowed); })) {
-            std::cout << "right do  " << std::endl;
+            std::cout << "right do = " << goal << std::endl;
             right_goal(goal);
-            task(goal, "right arm");
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            task(goal, model_[1], &right_state_, hw_.at(model_[1].description).get());
           } else {
             // put it back
             std::cout << "right back " << std::endl;
             queue_.push(std::move(work_maybe.value()));
           }
         } else {
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
           std::cout << "right no work" << std::endl;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         right_goal({0., 0.});
       }
     }};
@@ -653,24 +662,20 @@ struct arbiter_dual_async {
   ~arbiter_dual_async() { done_ = true; }
 
   std::future<result_type> operator()([[maybe_unused]] position_t goal) {
-    std::packaged_task<result_type(position_t, std::string)> task(
-        [this](auto const& goal_bin, auto const& arm) {
-          std::string goal_s = std::to_string(goal_bin.x) + ", " + std::to_string(goal_bin.y) + " ";
-          return result_type{tl::make_unexpected(goal_s + arm)};
-        });
+    task_type task(is_bin_occupied);
     std::future<result_type> result = task.get_future();
     queue_.push(std::make_pair(goal, std::move(task)));
     return result;
   }
 
-  position_t left_goal() { 
+  position_t left_goal() {
     std::lock_guard{left_mutex_};
-    return left_goal_; 
+    return left_goal_;
   }
 
-  void left_goal(position_t const& value) { 
+  void left_goal(position_t const& value) {
     std::lock_guard{left_mutex_};
-    left_goal_ = value; 
+    left_goal_ = value;
   }
 
   position_t right_goal() {
@@ -683,34 +688,23 @@ struct arbiter_dual_async {
     right_goal_ = value;
   }
 
-  // result_type is_bin_occupied([[maybe_unused]] position_t goal){
-  // Check if an arm is available
-  // Check if available arm can service the goal
-  // }
-
  private:
   std::array<kinematics_t, 2> model_;
   bin_grid_t bins_;
   std::map<std::string, position_t> home_;
   std::map<std::string, position_t> goal_;
   std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
-  thread_safe_queue<std::pair<position_t, std::packaged_task<result_type(position_t, std::string)>>>
-      queue_;
+  thread_safe_queue<std::pair<position_t, task_type>> queue_;
   std::atomic<bool> done_ = false;
   std::mutex left_mutex_;
   std::mutex right_mutex_;
+  position_t left_state_;
+  position_t right_state_;
   position_t left_goal_{0., 0.};
   position_t right_goal_{0., 0.};
   std::jthread left_engine_;
   std::jthread right_engine_;
 };
-
-// Bin checker for single arm sync should
-//   reference access(data_handle_type ptr, std::ptrdiff_t offset) const {
-//    auto const goal = ptr[offset];
-//    // give goal to robot arm
-//    // return what the robot arm sensed
-//
 
 // TODO: This should still be shown somehow to demonstrate that no stack/heap memory
 //        is actually needed
@@ -836,6 +830,8 @@ int main() {
   // }
   /* TEST DUAL ARM ASYNCHRONOUS */
   {
+    // auto left_arm = std::make_unique<hardware>("/dev/ttyACM0", 9600);
+    // auto right_arm = std::make_unique<hardware>("/dev/ttyUSB0", 9600);
     auto arbiter =
         arbiter_dual_async{left_arm, std::make_unique<mock_hardware>(left_arm), right_arm,
                            std::make_unique<mock_hardware>(right_arm), bin_grid};
@@ -847,43 +843,16 @@ int main() {
         futures.push_back(bins(i, j));
       }
     }
-    // Let the arms resolve the moves
-    // for (auto const& future : futures) {
-    //   future.wait();
-    // }
-
-    // for (auto& future : futures) {
-    //   std::cout << future.get() << "\n";
-    // }
 
     while (!futures.empty()) {
       std::erase_if(futures, [](auto& future) {
         if (is_ready(future)) {
           std::cout << future.get() << "\n";
-          return true;  // Remove future if ready
+          return true;
         }
-        return false;  // Keep future if not ready
+        return false;
       });
     }
   }
   return 0;
-
-  // auto arm = robot_arm{"/dev/ttyACM0", 9600};
-  // auto bins = bin_view(&arm);
-  // while (true) {
-  //   std::vector<std::future<bin_state>> futures;
-  //   for (auto i = 0u; i < bins.extent(0); ++i) {
-  //     for (auto j = 0u; j < bins.extent(1); ++j) {
-  //       futures.push_back(bins(i, j));
-  //     }
-  //   }
-  //   for (auto const& future : futures) {
-  //     future.wait();
-  //   }
-  //   for (auto& future : futures) {
-  //     print_state(future.get());
-  //   }
-  //   std::cout << "====================" << std::endl;
-  // }
-  // return 0;
 }
