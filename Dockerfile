@@ -62,7 +62,7 @@ RUN wget -q -O /bin/hadolint https://github.com/hadolint/hadolint/releases/downl
 # Setup user home directory
 # --no-log-init helps with excessively long UIDs
 RUN groupadd --gid $GID $USER \
-  && useradd --no-log-init --uid $GID --gid $UID -m $USER --groups sudo \
+  && useradd --no-log-init --uid $GID --gid $UID -m $USER --groups sudo,dialout \
   && echo $USER ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USER \
   && chmod 0440 /etc/sudoers.d/$USER \
   && echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /home/${USER}/.profile \
