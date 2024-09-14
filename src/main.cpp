@@ -932,8 +932,8 @@ int main() {
     // auto left_arm = std::make_unique<hardware>("/dev/ttyACM0", 9600);
     // auto right_arm = std::make_unique<hardware>("/dev/ttyUSB0", 9600);
     auto arbiter =
-        arbiter_dual_async{left_arm, std::make_unique<mock_hardware>(left_arm), right_arm,
-                           std::make_unique<hardware>("/dev/ttyACM0", 9600), bin_grid};
+        arbiter_dual_async{left_arm, std::make_unique<hardware>("/dev/ttyACM0", 9660), right_arm,
+                           std::make_unique<hardware>("/dev/ttyACM1", 9600), bin_grid};
     auto bin_checker = bin_checker_async_t{&arbiter};
     auto bins = bin_view_async_t(bin_positions.data(), {}, bin_checker);
     std::vector<std::future<tl::expected<bin_state, std::string>>> futures;
