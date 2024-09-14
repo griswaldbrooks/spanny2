@@ -22,7 +22,7 @@ using json = nlohmann::json;
 enum struct bin_occupancy { OCCUPIED, EMPTY };
 /**
  * @brief Thread-safe queue. Particularly useful when multiple threads need to write to and/or read
- * from a queue.
+ * from a queue. Move-only
  */
 template <typename T>
 class thread_safe_queue {
@@ -249,7 +249,6 @@ bool same(position_t const& lhs, position_t const& rhs) {
   return near(lhs.x, rhs.x) && near(lhs.y, rhs.y);
 }
 
-// Kinematics for left arm
 // Given two joint andles, what is the x, y
 position_t forward_kinematics(joint_angles const& joint, kinematics_t config) {
   position_t const tool{
@@ -275,7 +274,6 @@ joint_angles bounded_range(joint_angles const& angles) {
   return {first, second};
 }
 
-// Inverse Kinematics
 // Given an x, y, and elbow config what are the joint angles
 joint_angles inverse_kinematics(position_t goal, kinematics_t const& config) {
   // Transform the goal back into the arm frame
@@ -325,7 +323,7 @@ position_t generate_waypoint(position_t const& p, kinematics_t const& model) {
   return {p.x + offset, p.y};
 }
 
-// function that takes a goal and arm and returns a plan
+// function that takes waypoints and linearly interpolates between them
 path_t plan_cartesian(path_t const& waypoints) {
   if (waypoints.empty()) {
     return {{0., 0.}};  // Convert to std::expected
@@ -350,7 +348,7 @@ path_t plan_cartesian(path_t const& waypoints) {
 // function that takes a goal and arm and returns a plan
 std::vector<joint_angles> plan_joint(path_t const& waypoints, kinematics_t const& model) {
   if (waypoints.empty()) {
-    return {{0., 0.}};  // Convert to std::expected
+    return {};  // Convert to std::expected
   }
   if (waypoints.size() == 1) {
     return inverse_kinematics(waypoints, model);
@@ -443,11 +441,9 @@ struct mock_hardware : public hardware_interface {
     // Get a random sleep duration in milliseconds
     int sleep_duration = dist(gen);
 
-    std::cout << "Sleeping for " << sleep_duration << " milliseconds." << std::endl;
-
-    // Sleep for the random duration
-    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_duration));
     std::cout << model_.description << "\n";
+    std::cout << "sleeping for " << sleep_duration << " milliseconds." << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_duration));
     std::cout << "x, y\n";
     std::ranges::for_each(path, [&](auto const& j) {
       auto const p = forward_kinematics(j, model_);
@@ -458,6 +454,7 @@ struct mock_hardware : public hardware_interface {
   kinematics_t model_;
 };
 
+// TODO: in arduino, need a joint angle to pwm function
 struct hardware : public hardware_interface {
   hardware(std::string port, uint32_t baudrate,
            serial::Timeout timeout = serial::Timeout::simpleTimeout(10000))
@@ -505,6 +502,7 @@ struct arbiter_single {
         state_{0., 0.},
         home_{forward_kinematics(state_, model_)},
         command_path_{std::move(hw)} {
+    // Command the robot to home
     (*command_path_)({state_});
   }
 
@@ -533,6 +531,9 @@ struct arbiter_dual {
               {model_[1].description, forward_kinematics({0., 0.}, model_[1])}} {
     hw_.emplace(model_[0].description, std::move(hw_left));
     hw_.emplace(model_[1].description, std::move(hw_right));
+    // Command the robots to home
+    (*hw_.at(model_[0].description))({{0., 0.}});
+    (*hw_.at(model_[1].description))({{0., 0.}});
   }
 
   tl::expected<bin_occupancy, std::string> operator()(position_t const& goal) {
@@ -554,11 +555,6 @@ struct arbiter_dual {
   std::map<std::string, std::unique_ptr<hardware_interface>> hw_;
 };
 
-// TODO: robot should return to waypoint after reading state
-// TODO: on start up, robots should go to home
-// TODO: on shut down, robots should go to home
-// TODO: on the synchronous ones, should the value be reported after the moves are done?
-// TODO: in arduino, need a joint angle to pwm function
 tl::expected<bin_state, std::string> is_bin_occupied(position_t const& goal,
                                                      kinematics_t const& model, position_t* state,
                                                      hardware_interface* hw) {
@@ -589,82 +585,72 @@ struct arbiter_dual_async {
         right_state_{forward_kinematics({0., 0.}, model_[1])} {
     hw_.emplace(model_[0].description, std::move(hw_left));
     hw_.emplace(model_[1].description, std::move(hw_right));
+    // Command the robots to home
+    (*hw_.at(model_[0].description))({{0., 0.}});
+    (*hw_.at(model_[1].description))({{0., 0.}});
     left_engine_ = std::jthread{[this] {
       while (!done_) {
-        // while (false) {
         // get the goal of the other arm
         auto const other_goal = right_goal();
         // Get the list of available goals
         auto const allowed_goals = available_goals(bins_, model_[0], other_goal);
-        std::cout << "left goals size = " << allowed_goals.size() << "\n";
         // Check if any of the goals on the queue are available
         auto work_maybe = queue_.pop();
         if (work_maybe.has_value()) {
-          // std::cout << "work" << std::endl;
           auto& [goal, task] = work_maybe.value();
-          // std::cout << goal << std::endl;
           // If the goal is allowed, do it
           if (std::ranges::any_of(allowed_goals,
                                   [&](auto const& allowed) { return same(goal, allowed); })) {
-            std::cout << "left do = " << goal << std::endl;
             left_goal(goal);
             task(goal, model_[0], &left_state_, hw_.at(model_[0].description).get());
-            // std::this_thread::sleep_for(std::chrono::seconds(1));
           } else {
             // put it back
-            std::cout << "left back " << std::endl;
             queue_.push(std::move(work_maybe.value()));
           }
-        } else {
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          std::cout << "left no work" << std::endl;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         // Reset to indicate that the goal is not being worked on
         left_goal({0., 0.});
       }
     }};
     right_engine_ = std::jthread{[this] {
       while (!done_) {
-        // while (false) {
         // get the goal of the other arm
         auto const other_goal = left_goal();
         // Get the list of available goals
         auto const allowed_goals = available_goals(bins_, model_[1], other_goal);
-        std::cout << "right goals size = " << allowed_goals.size() << "\n";
         // Check if any of the goals on the queue are available
         auto work_maybe = queue_.pop();
         if (work_maybe.has_value()) {
-          // std::cout << "work" << std::endl;
           auto& [goal, task] = work_maybe.value();
-          // std::cout << goal << std::endl;
           // If the goal is allowed, do it
           if (std::ranges::any_of(allowed_goals,
                                   [&](auto const& allowed) { return same(goal, allowed); })) {
-            std::cout << "right do = " << goal << std::endl;
             right_goal(goal);
             task(goal, model_[1], &right_state_, hw_.at(model_[1].description).get());
           } else {
             // put it back
-            std::cout << "right back " << std::endl;
             queue_.push(std::move(work_maybe.value()));
           }
-        } else {
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          std::cout << "right no work" << std::endl;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Reset to indicate that the goal is not being worked on
         right_goal({0., 0.});
       }
     }};
   }
 
-  ~arbiter_dual_async() { done_ = true; }
+  ~arbiter_dual_async() {
+    done_ = true;
+    left_engine_.join();
+    right_engine_.join();
+    // Command the arms to home
+    (*hw_.at(model_[0].description))({{0., 0.}});
+    (*hw_.at(model_[1].description))({{0., 0.}});
+  }
 
-  std::future<result_type> operator()([[maybe_unused]] position_t goal) {
+  std::future<result_type> operator()(position_t goal) {
     task_type task(is_bin_occupied);
     std::future<result_type> result = task.get_future();
-    queue_.push(std::make_pair(goal, std::move(task)));
+    queue_.push(std::make_pair(std::move(goal), std::move(task)));
     return result;
   }
 
