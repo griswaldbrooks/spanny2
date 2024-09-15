@@ -20,27 +20,35 @@ that they are not limited and can leverage the full capabilities of C++
 ## Features of std::mdspan
 - Multi-dimensional view type without memory layout restrictions
 - Customization points: layout and accessor policies
+    - strategy pattern
+- make this really short as we will go more in depth later but in short layout describe how to translate a multidimensional index to a storage location, and accessors describe how to retrive data from the storage location
+- we will learn how layout and accessor policies work, what the type requirements of them are, how to implement your own custom policies, and how they leverage the full flexibility of C++
 
 ## Layout policies and how to use them 
 - Explain what a layout is 
     - index to memory location mapping 
     - explain with ascii art 
-    - explain layout requirements being a templated mapping type with template Extents parameter
-        extents_type const& extents() const
-        size_type operator()(auto indices...) // you choose how many!
-        size_type required_span_size() const
-    - static constexpr bool is_always_unique()
-    - bool is_unique()
-        - use timur's example of when this is false
-    static constexpr bool is_always_exhaustive()
-    bool is_exhaustive()
-        - compare layout
-    static constexpr bool is_always_strided()
-    bool is_strided()
-    https://eel.is/c++draft/mdspan.layout#reqmts
-    - no requirement on default constructability
     - briefly explain out of the box layouts, right, left, stride
         - i really like the downsampling example for a 2d stride
+    - no requirement on default constructability
+    - explain layout requirements being a templated mapping type with template Extents parameter
+        extents_type const& extents() const
+        - extents represent the dimensionality of the object ie number of dimensions (rank) and how long 
+          they are
+        size_type operator()(auto indices...) // you choose how many!
+        size_type required_span_size() const
+        - the number of contiguous elements in the referred data structure needed to contain the spanned elements
+    - static constexpr bool is_always_unique()
+    - bool is_unique()
+        - show how a symmetric matrix index mapping and diagram as the code for a layout this early would be premature
+    static constexpr bool is_always_exhaustive()
+    bool is_exhaustive()
+        - show how layout_strided is not exhaustive
+    static constexpr bool is_always_strided()
+    bool is_strided()
+        - has consistent constant offsets, all strided layouts are non-exhaustive but we will show 
+          examples of layouts that are not exhaustive and have no consistent stride
+    https://eel.is/c++draft/mdspan.layout#reqmts
 - Occupancy grids
     - briefly explain occupancy grid and the trinary scheme
     - show how to implement "global" occupancy grid with std::vector
@@ -63,8 +71,12 @@ that they are not limited and can leverage the full capabilities of C++
     - if the submap could follow the orientation of the robot this wouldn't be a problem
     - this means we get to define our own layout!
     - which ends up being an exercise in indice mapping 
+    - non-defaul ctor
     - skew rotation algorithm mapping
     - show layout_rotated from it's point of view
+    - show layout_rotatable and all of the indices which won't map in the square to the range 
+      and therefore is not exhaustive nor strided 
+    - make sure the example here has a nice sharp corner near the top
 - Polygonal views and arbitrary layouts 
     - The above example shows the power of writing functional non-square layout, we can go further
     - We can generate a set of indices, much like you might do with the std::cartesian example 
@@ -77,20 +89,29 @@ that they are not limited and can leverage the full capabilities of C++
     - this allows me to add obstacles to my map 
     - collision check my robot footprint
     - clear and mark lidar points
-- conclusion to this section?
-- lead in to the next section?
+- conclusion to this section
+    - mention that we learned what a layout is and it's requirements 
+    - what the out of the box layouts do 
+    - how we can make our own layouts with non-default constructable
+    - have state 
+    - dimensionality reduction
+- lead in to the next section
+    - these examples still referred to elements on the stack/heap 
+    - but what if our data lives somewhere else?
 
 ## Accessor policies and how to use them
 - Explain what accessor policies are (reprise intro on customization points briefly)
+- they take the offset from the layout and return data from a storage location
 - Explain how the default accessor works ie return p[offset]
 - Talk about the type requirements of an accessor, ie using element_type, reference, data_handle_type
+- accessor has no requirements on default constructability
 - Note there are no template requirements like the layout policy has
 - Note that they are not limited to this pattern
 - In fact... you can call arbitrary functions in the accessor
 - Show the simple std function accessor example and how the mdspan::T must match accessor::element_type 
   but the first ctor element must match accessor::data_handle_type
+  - show a hilbert matrix
   - note that accessor::reference does not need to be a & or * or even related to accessor::element_type
-- accessor has no requirements on default constructability
 - Daisy Hollman said... Accessor policies interfacing with GPUs (e.g., CUDA calls)
 - But let's see what we can do 
 - I don't work on GPUs, but I do work on robots
@@ -107,13 +128,15 @@ that they are not limited and can leverage the full capabilities of C++
         - also here's the github
     - what's different from the default accessor policy
         - first of all, calling a blocking function in an accessor
+        - i mean the default one is blocking but this one takes seconds to access an element
         - show the initial version of this did not require a reference to stack/heap memory and
           was purely functional
         - this version only uses the pointed to array from the json to give the metric locations
-        - but let's not the anatomy of the accessor type declaration and ctor 
+        - but let's now talk about the anatomy of the accessor type declaration and ctor 
         - note how those two parameters, that normally would be realted, need not be 
-          and are actually unrelated and depend on the accessor types
+          and are actually unrelated and depend on the accessor types and mentioned previously
         - this allows the element type to be a bin_state, but the data_handle_type to be the robot arbiter
+          as with our lambda example from earlier
         - so now we can access the elements, which causes us to command the robot arm to check the appropriate bin
 - Synchronous command of dual robot arms
     - problem: this seems slow and inefficient... but what if we added another robot arm 
@@ -126,7 +149,12 @@ that they are not limited and can leverage the full capabilities of C++
     - show the arbiter using std::jthread and std::packaged_task with a thread_safe_queue
     - now, the accessor is calling functions that create std::futures!
     - this isn't really anything special about accessors as they are just types with a few requirements
-
+- to summarize
+    - we learned what accessor policies do and how the default one works  
+    - we learned the requirements of the accessor, and what aren't requirements 
+    - we learned how to implement our own accessor from a very simple lambda calculation
+      to something very complicated
+    - we learned that accessors can return async resources because they can use the full flexibility of C++
 ## Conclusion
 - Summary of mdspan features and benefits
 - Discussion of use cases in fleet management and warehouse inventory control

@@ -833,6 +833,8 @@ int main(int /* argc */, char** /* argv[] */) {
   double const orientation = 2.;
   set_scan(global_map, laser_scan, center, orientation);
   std::cout << global_map << std::endl;
+  std::cout << local_map.is_exhaustive() << std::endl;
+  std::cout << local_map.is_strided() << std::endl;
   // save_occupancy_grid("occupancy_grid.png", global_map);
   return 0;
 }

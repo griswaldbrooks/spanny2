@@ -789,6 +789,15 @@ bool is_ready(std::future<R> const& f) {
   return f.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
 }
 
+  template<std::size_t Width>
+  struct hilbert_accessor_t {
+    using element_type = double;
+    using reference = element_type;
+    using size_type = std::size_t;
+    using data_handle_type = std::function<double(size_type, size_type)>;
+
+    reference access(data_handle_type p, size_type offset) const { return p(offset, Width); }
+  };
 int main() {
   std::ifstream bin_file{"src/spanny2/config/bin_config.json"};
   json bin_config = json::parse(bin_file);
@@ -932,22 +941,16 @@ int main() {
     // }
   }
 
-  struct remote_accessor_t {
-    using element_type = int;
-    using reference = element_type;
-    using size_type = std::size_t;
-    using data_handle_type = std::function<int(size_type)>;
 
-    reference access(data_handle_type p, size_type offset) const { return p(offset); }
+  using hilbert_view_t = std::mdspan<double, std::extents<std::size_t, 3, 3>, std::layout_right, hilbert_accessor_t<3>>;
+  auto hilbert_function = [](std::size_t ndx, std::size_t width) -> double { 
+    auto const n = static_cast<double>(ndx);
+    auto const M = static_cast<double>(width);
+    return 1. / (std::floor(n / M) + std::fmod(n, M) + 1);
   };
-
-  using remote_view_t =
-      std::mdspan<int, std::extents<std::size_t, 3, 3>, std::layout_right, remote_accessor_t>;
-
-  auto nl_function = [](std::size_t ndx) -> int { return static_cast<int>(ndx); };
-
-  auto remote_view = remote_view_t{nl_function};
-  assert(4 == remote_view(1, 1));
+ 
+  auto hilbert_view = hilbert_view_t{hilbert_function};
+  std::cout << hilbert_view(2, 2) << std::endl;
   return 0;
   /* TEST DUAL ARM ASYNCHRONOUS */
   {
