@@ -13,6 +13,7 @@
 #include <iterator>
 #include <numbers>
 #include <ranges>
+#include <set>
 #include <string>
 
 namespace stdex = std::experimental;
@@ -30,6 +31,12 @@ namespace geometry {
 struct Cell {
   int x;  ///< The x coordinate of the cell
   int y;  ///< The y coordinate of the cell
+};
+
+struct CellCompare {
+  bool operator()(Cell const& lhs, Cell const& rhs) const {
+    return std::tie(lhs.x, lhs.y) < std::tie(rhs.x, rhs.y);
+  }
 };
 
 std::vector<std::vector<int>> bresenham_conversion(int x0, int y0, int x1, int y1) {
@@ -215,14 +222,27 @@ struct layout_rotatable {
   requires(Extents::rank() == 2) struct mapping {
     using extents_type = Extents;
     using size_type = typename extents_type::size_type;
+    using index_type = typename extents_type::index_type;
 
     constexpr mapping(extents_type parent_shape, extents_type shape, coordinate_t translation,
                       double theta)
         : shape_{std::move(shape)},
           translation_{std::move(translation)},
           theta_{theta},
-          parent_shape_{std::move(parent_shape)} {}
-
+          parent_shape_{std::move(parent_shape)},
+          span_size_{[this]() {
+            // Compute span size by the maximum index created by the vertices
+            size_type max_index = 0;
+            for (size_type y = 0; y < shape_.extent(0); ++y) {
+              for (size_type x = 0; x < shape_.extent(1); ++x) {
+                auto const index = operator()(x, y);
+                if (index > max_index) {
+                  max_index = index;
+                }
+              }
+            }
+            return max_index + 1;
+          }()} {}
     constexpr extents_type const& extents() const noexcept { return shape_; }
 
     constexpr size_type operator()(size_type x, size_type y) const noexcept {
@@ -240,23 +260,22 @@ struct layout_rotatable {
       return x + y * parent_shape_.extent(1);
     }
 
-    constexpr size_type required_span_size() const noexcept {
-      return shape_.extent(0) * shape_.extent(1);
-    }
+    constexpr size_type required_span_size() const noexcept { return span_size_; }
 
-    static constexpr bool is_always_unique() noexcept { return false; }
-    static constexpr bool is_always_exhaustive() noexcept { return true; }
-    static constexpr bool is_always_strided() noexcept { return false; }
-
-    constexpr bool is_unique() const noexcept { return false; }
-    constexpr bool is_exhaustive() const noexcept { return true; }
+    constexpr bool is_unique() const noexcept { return true; }
+    constexpr bool is_exhaustive() const noexcept { return false; }
     constexpr bool is_strided() const noexcept { return false; }
+
+    static constexpr bool is_always_unique() noexcept { return true; }
+    static constexpr bool is_always_exhaustive() noexcept { return false; }
+    static constexpr bool is_always_strided() noexcept { return false; }
 
    private:
     extents_type shape_;
     coordinate_t translation_;
     double theta_;
     extents_type parent_shape_;
+    size_type span_size_;
   };
 };
 
@@ -275,24 +294,36 @@ struct layout_vertices {
   requires(Extents::rank() == 1) struct mapping {
     using extents_type = Extents;
     using size_type = typename extents_type::size_type;
-
+    using index_type = typename extents_type::index_type;
     constexpr mapping(std::dextents<std::size_t, 2> parent_shape,
                       std::vector<geometry::Cell> vertices, geometry::Cell const& p, double theta)
         : parent_shape_{std::move(parent_shape)},
           vertices_{[&] {
-            std::vector<geometry::Cell> transformed_vertices;
+            std::set<geometry::Cell, geometry::CellCompare> unique_vertices;
             for (auto& v : vertices) {
               auto x = static_cast<int>(v.x * std::cos(theta) - v.y * std::sin(theta) + p.x);
               auto y = static_cast<int>(v.x * std::sin(theta) + v.y * std::cos(theta) + p.y);
               v.x = x;
               v.y = y;
               if (in_bounds(v, parent_shape_)) {
-                transformed_vertices.push_back(v);
+                unique_vertices.insert(v);
               }
             }
-            return transformed_vertices;
+            return std::vector<geometry::Cell>{unique_vertices.begin(), unique_vertices.end()};
           }()},
-          extents_{vertices_.size()} {}
+          extents_{vertices_.size()},
+          span_size_{[this]() {
+            // Compute span size by the maximum index created by the vertices
+            index_type max_index = 0;
+            for (const auto& coord : vertices_) {
+              auto const index = static_cast<index_type>(coord.x) +
+                                 static_cast<index_type>(coord.y) * parent_shape_.extent(1);
+              if (index > max_index) {
+                max_index = index;
+              }
+            }
+            return max_index + 1;
+          }()} {}
 
     constexpr extents_type const& extents() const noexcept { return extents_; }
 
@@ -305,20 +336,21 @@ struct layout_vertices {
       return offset;
     }
 
-    constexpr size_type required_span_size() const noexcept { return vertices_.size(); }
+    constexpr size_type required_span_size() const noexcept { return span_size_; }
 
-    static constexpr bool is_always_unique() noexcept { return false; }
-    static constexpr bool is_always_exhaustive() noexcept { return true; }
+    static constexpr bool is_always_unique() noexcept { return true; }
+    static constexpr bool is_always_exhaustive() noexcept { return false; }
     static constexpr bool is_always_strided() noexcept { return false; }
 
-    constexpr bool is_unique() const noexcept { return false; }
-    constexpr bool is_exhaustive() const noexcept { return true; }
+    constexpr bool is_unique() const noexcept { return true; }
+    constexpr bool is_exhaustive() const noexcept { return false; }
     constexpr bool is_strided() const noexcept { return false; }
 
    private:
     std::dextents<std::size_t, 2> parent_shape_;
     std::vector<geometry::Cell> vertices_;
     extents_type extents_;
+    size_type span_size_;
   };
 };
 
@@ -327,12 +359,13 @@ struct layout_raytrace {
   requires(Extents::rank() == 1) struct mapping {
     using extents_type = Extents;
     using size_type = typename extents_type::size_type;
+    using index_type = typename extents_type::index_type;
 
     constexpr mapping(std::dextents<std::size_t, 2> parent_shape,
                       std::vector<geometry::Cell> vertices, geometry::Cell const& p, double theta)
         : parent_shape_{std::move(parent_shape)},
           rays_{[&] {
-            std::vector<geometry::Cell> rays;
+            std::set<geometry::Cell, geometry::CellCompare> unique_cells;
             for (auto& v : vertices) {
               auto x = static_cast<int>(v.x * std::cos(theta) - v.y * std::sin(theta) + p.x);
               auto y = static_cast<int>(v.x * std::sin(theta) + v.y * std::cos(theta) + p.y);
@@ -341,13 +374,25 @@ struct layout_raytrace {
               auto const ray = raytrace(p, v, std::numeric_limits<int>::max());
               for (auto const& pixel : ray) {
                 if (in_bounds(pixel, parent_shape_)) {
-                  rays.push_back(pixel);
+                  unique_cells.insert(pixel);
                 }
               }
             }
-            return rays;
+            return std::vector<geometry::Cell>{unique_cells.begin(), unique_cells.end()};
           }()},
-          extents_{rays_.size()} {}
+          extents_{rays_.size()},
+          span_size_{[this]() {
+            // Compute span size by the maximum index created by the vertices
+            index_type max_index = 0;
+            for (const auto& coord : rays_) {
+              auto const index = static_cast<index_type>(coord.x) +
+                                 static_cast<index_type>(coord.y) * parent_shape_.extent(1);
+              if (index > max_index) {
+                max_index = index;
+              }
+            }
+            return max_index + 1;
+          }()} {}
 
     constexpr extents_type const& extents() const noexcept { return extents_; }
 
@@ -360,20 +405,21 @@ struct layout_raytrace {
       return offset;
     }
 
-    constexpr size_type required_span_size() const noexcept { return rays_.size(); }
+    constexpr size_type required_span_size() const noexcept { return span_size_; }
 
-    static constexpr bool is_always_unique() noexcept { return false; }
-    static constexpr bool is_always_exhaustive() noexcept { return true; }
+    static constexpr bool is_always_unique() noexcept { return true; }
+    static constexpr bool is_always_exhaustive() noexcept { return false; }
     static constexpr bool is_always_strided() noexcept { return false; }
 
-    constexpr bool is_unique() const noexcept { return false; }
-    constexpr bool is_exhaustive() const noexcept { return true; }
+    constexpr bool is_unique() const noexcept { return true; }
+    constexpr bool is_exhaustive() const noexcept { return false; }
     constexpr bool is_strided() const noexcept { return false; }
 
    private:
     std::dextents<std::size_t, 2> parent_shape_;
     std::vector<geometry::Cell> rays_;
     extents_type extents_;
+    size_type span_size_;
   };
 };
 
@@ -382,6 +428,7 @@ struct layout_polygonal {
   requires(Extents::rank() == 1) struct mapping {
     using extents_type = Extents;
     using size_type = typename extents_type::size_type;
+    using index_type = typename extents_type::index_type;
 
     constexpr mapping(std::dextents<std::size_t, 2> parent_shape,
                       std::vector<geometry::Cell> vertices, geometry::Cell const& p, double theta)
@@ -397,7 +444,19 @@ struct layout_polygonal {
             return geometry::convexFill(vertices,
                                         {parent_shape_.extent(0), parent_shape_.extent(1)});
           }()},
-          extents_{polygon_.size()} {}
+          extents_{polygon_.size()},
+          span_size_{[this]() {
+            // Compute span size by the maximum index created by the vertices
+            index_type max_index = 0;
+            for (const auto& coord : polygon_) {
+              auto const index = static_cast<index_type>(coord.x) +
+                                 static_cast<index_type>(coord.y) * parent_shape_.extent(1);
+              if (index > max_index) {
+                max_index = index;
+              }
+            }
+            return max_index + 1;
+          }()} {}
 
     constexpr extents_type const& extents() const noexcept { return extents_; }
 
@@ -410,20 +469,21 @@ struct layout_polygonal {
       return offset;
     }
 
-    constexpr size_type required_span_size() const noexcept { return polygon_.size(); }
+    constexpr size_type required_span_size() const noexcept { return span_size_; }
 
-    static constexpr bool is_always_unique() noexcept { return false; }
-    static constexpr bool is_always_exhaustive() noexcept { return true; }
+    static constexpr bool is_always_unique() noexcept { return true; }
+    static constexpr bool is_always_exhaustive() noexcept { return false; }
     static constexpr bool is_always_strided() noexcept { return false; }
 
-    constexpr bool is_unique() const noexcept { return false; }
-    constexpr bool is_exhaustive() const noexcept { return true; }
+    constexpr bool is_unique() const noexcept { return true; }
+    constexpr bool is_exhaustive() const noexcept { return false; }
     constexpr bool is_strided() const noexcept { return false; }
 
    private:
     std::dextents<std::size_t, 2> parent_shape_;
     std::vector<geometry::Cell> polygon_;
     extents_type extents_;
+    size_type span_size_;
   };
 };
 

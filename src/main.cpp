@@ -235,7 +235,8 @@ std::ostream& operator<<(std::ostream& os, tl::expected<bin_state, std::string> 
   }
   return os;
 }
-std::ostream& operator<<(std::ostream& os, tl::expected<bin_occupancy, std::string> const& bin_maybe) {
+std::ostream& operator<<(std::ostream& os,
+                         tl::expected<bin_occupancy, std::string> const& bin_maybe) {
   if (!bin_maybe.has_value()) {
     os << bin_maybe.error();
     return os;
@@ -471,8 +472,8 @@ struct mock_hardware : public hardware_interface {
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_duration));
     std::cout << "x, y\n";
     // std::ranges::for_each(path, [&](auto const& j) {
-      // auto const p = forward_kinematics(j, model_);
-      // std::cout << p.x << ", " << p.y << "\n";
+    // auto const p = forward_kinematics(j, model_);
+    // std::cout << p.x << ", " << p.y << "\n";
     // });
     std::vector<std::array<int, 2>> path_degrees;
     std::ranges::transform(
@@ -505,9 +506,9 @@ struct hardware : public hardware_interface {
         });
     std::ranges::for_each(path_degrees, [this](auto const& joint_angle) {
       // serial_.write(serialize_newline(joint_angle));
-      auto ser = serialize_newline(joint_angle);
-      // std::cout << "serialized = " << ser;
-      serial_.write(ser);
+      auto set = serialize_newline(joint_angle);
+      // std::cout << "serialized = " << set;
+      serial_.write(set);
     });
     try {
       // Send read sensor command so there isn't ambiguity about return values from the serial
@@ -551,7 +552,8 @@ struct arbiter_single {
     // std::cout << "reading = " << sensor_reading_maybe << std::endl;
     // std::this_thread::sleep_for(std::chrono::seconds(1));
     // Out current cartesian position should be at the goal
-    auto const goto_home = inverse_kinematics(plan_cartesian({goal, near_goal, home_}, 0.05), model_);
+    auto const goto_home =
+        inverse_kinematics(plan_cartesian({goal, near_goal, home_}, 0.05), model_);
     // std::cout << "goto home\n";
     (*command_path_)(goto_home);
     // std::cout << "### wentto home\n";
@@ -866,17 +868,16 @@ int main() {
 
   /* TEST SINGLE ARM SYNCHRONOUS */
   {
-    // auto arbiter = arbiter_single{left_arm, std::make_unique<mock_hardware>(left_arm)};
-    // auto arbiter = arbiter_single{right_arm, std::make_unique<hardware>("/dev/ttyACM0", 9600)};
-    // auto bin_checker = bin_checker_t{&arbiter};
-    // auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
-    // for (auto i = 0u; i != bins.extent(0); ++i) {
-    //   for (auto j = 0u; j != bins.extent(1); ++j) {
-    //     std::cout << bins(i, j) << "\n";
-    //   }
-    // }
-  }
-  // auto hw = hardware("/dev/ttyACM0", 9600);
+      // auto arbiter = arbiter_single{left_arm, std::make_unique<mock_hardware>(left_arm)};
+      // auto arbiter = arbiter_single{right_arm, std::make_unique<hardware>("/dev/ttyACM0", 9600)};
+      // auto bin_checker = bin_checker_t{&arbiter};
+      // auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
+      // for (auto i = 0u; i != bins.extent(0); ++i) {
+      //   for (auto j = 0u; j != bins.extent(1); ++j) {
+      //     std::cout << bins(i, j) << "\n";
+      //   }
+      // }
+  }  // auto hw = hardware("/dev/ttyACM0", 9600);
   // hw({joint_angles{std::numbers::pi / 2., 0.}});
   // return 0;
   // right_arm.origin = {0.0, 0.0};
@@ -908,8 +909,10 @@ int main() {
   //           std::cout << "Invalid input. Please press 'j', 'k', or 'x'." << std::endl;
   //           continue;
   //       }
-  //       std::cout << "T = {" << right_arm.origin.x << ", " << right_arm.origin.y << ", " << right_arm.orientation << "}" << std::endl;
-  //       auto arbiter = arbiter_single{right_arm, std::make_unique<hardware>("/dev/ttyACM0", 9600)};
+  //       std::cout << "T = {" << right_arm.origin.x << ", " << right_arm.origin.y << ", " <<
+  //       right_arm.orientation << "}" << std::endl;
+  //       auto arbiter = arbiter_single{right_arm, std::make_unique<hardware>("/dev/ttyACM0",
+  //       9600)};
   //       arbiter({0.210, 0.068});
   //       arbiter({0.210, 0.194});
   //       arbiter({0.273, 0.194});
@@ -917,7 +920,8 @@ int main() {
   //   }
   /* TEST DUAL ARM SYNCHRONOUS */
   {
-    // auto arbiter = arbiter_dual{left_arm, std::make_unique<hardware>("/dev/ttyACM0", 9600), right_arm,
+    // auto arbiter = arbiter_dual{left_arm, std::make_unique<hardware>("/dev/ttyACM0", 9600),
+    // right_arm,
     //                             std::make_unique<mock_hardware>(right_arm)};
     // auto bin_checker = bin_checker_t{&arbiter};
     // auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
@@ -927,6 +931,24 @@ int main() {
     //   }
     // }
   }
+
+  struct remote_accessor_t {
+    using element_type = int;
+    using reference = element_type;
+    using size_type = std::size_t;
+    using data_handle_type = std::function<int(size_type)>;
+
+    reference access(data_handle_type p, size_type offset) const { return p(offset); }
+  };
+
+  using remote_view_t =
+      std::mdspan<int, std::extents<std::size_t, 3, 3>, std::layout_right, remote_accessor_t>;
+
+  auto nl_function = [](std::size_t ndx) -> int { return static_cast<int>(ndx); };
+
+  auto remote_view = remote_view_t{nl_function};
+  assert(4 == remote_view(1, 1));
+  return 0;
   /* TEST DUAL ARM ASYNCHRONOUS */
   {
     // auto left_arm = std::make_unique<hardware>("/dev/ttyACM0", 9600);

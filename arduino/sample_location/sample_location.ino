@@ -22,7 +22,7 @@ struct optional {
 
 optional<robot_state> get_command(Serial_& serial) {
   robot_state state{0, 0};
-  
+
   // Read the incoming string until a newline character
   String const input = serial.readStringUntil('\n');
   // Parse the joint angles from the input string
@@ -94,7 +94,7 @@ void loop() {
       Serial.println(1);
       return;
     }
-  
+
     digitalWrite(13, LOW); // Turn off LED
     Serial.println(0);
     return;
