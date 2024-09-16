@@ -26,7 +26,16 @@ that they are not limited and can leverage the full capabilities of C++
 
 ## Layout policies and how to use them 
 - Explain what a layout is 
-    - index to memory location mapping 
+    - maps a multidimensional index to a storage location
+    - computers don't store things in multidimensional arrays, so every multidimensional indexing ultimately is a mapping into a 1d-array
+        - struct of arrays or array of structs
+    - may be:
+        - non-contiguous
+        - map multiple indices to the same storage location
+        - do arbitrary compute
+        - have state
+    - rank = the number of extents
+    - extent = the length of a dimension
     - explain with ascii art 
     - briefly explain out of the box layouts, right, left, stride
         - i really like the downsampling example for a 2d stride
@@ -154,38 +163,29 @@ that they are not limited and can leverage the full capabilities of C++
     - we learned the requirements of the accessor, and what aren't requirements 
     - we learned how to implement our own accessor from a very simple lambda calculation
       to something very complicated
-    - we learned that accessors can return async resources because they can use the full flexibility of C++
+    - we learned that accessors can return async resources because they can leverage the full flexibility of C++
+
 ## Conclusion
-- Summary of mdspan features and benefits
-- Discussion of use cases in fleet management and warehouse inventory control
-- Using std::mdspan to access cloud resources asynchronously
-- Potential impact on robotics and other fields
-- Speculation on future applications and developments
+- in conclusion we discussed:
+- what mdspan is and the motivation for the type
+- we discussed the customization points of the layout and accessor policies 
+    - how layouts map indices to storage locations 
+    - how accessors map storage locations to storage values
+- we showed the built in options for each 
+    - layout_right, layout_left, layout_stride 
+    - submdspan 
+    - default_accessor
+- we showed how you can implement your own policies 
+    - reviewed policy requirements 
+    - policies to not have to be default constructable 
+    - policies can have state 
+    - layouts can normally increase dimensionality but can do dimensionality reduction
+    - layouts do not have to map contiguously and can map multiple indices to the same storage location
+    - mdspan does not have to refer to continuous memory... or any memory
+    - accessor::data_handle_type is not related to accessor::reference nor mdspan::element_type (accessor::element_type)
+        though... I'm not sure that mdspan::element_type == accessor::element_type is really relevant
+    - accessors can return futures, allowing storage access to be asynchronous
 
-## What is a layout
-- maps a multidimensional index to a storage location
-- may be:
-    - non-contiguous
-    - map multiple indices to the same storage location
-    - do arbitrary compute
-    - have state
-
-rank = the number of extents
-extent = the length of a dimension
-
-- show how to implement local map/window
-    - doesn't work with layout_right (and why)
-    - layout_string
-    - submdspan
-- computers don't store things in multidimensional arrays, so every multidimensional indexing
-  is a mapping into a 1d-array
-- mention matrix/slide/stride vs iterator
-- open source cad
-- implement matrix with mdspan
-- use ranges
-
-## Accessor
-- make sure that the output of the layout::mapping matches the input of the accessor::operator()
-- mdspan::T type must match the accessor::element_type but the first element of the ctor
-  of the mdspan must match accessor::data_handle_type
-
+# Final slide
+- code and slides on github 
+- cad files linked on onshape, but I have to publish the parts list, boards, and put the parts on printables
