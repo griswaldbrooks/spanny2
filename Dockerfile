@@ -44,6 +44,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=apt \
   neovim \
   python3 \
   python3-pip \
+  python-is-python3 \
   sudo \
   ssh \
   vim \
