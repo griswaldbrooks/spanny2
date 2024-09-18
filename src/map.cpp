@@ -732,7 +732,30 @@ void save_occupancy_grid(std::filesystem::path const& filename, occupancy_grid_t
 
   cv::imwrite(filename, img);
 }
+void save_occupancy_grid(std::filesystem::path const& filename, std::mdspan<unsigned char, std::dextents<std::size_t, 2>, layout_rotatable> grid) {
+  auto const shape = grid.extents();
+  // Create a 8-bit unsigned single-channel grayscale cv::Mat
+  cv::Mat img(static_cast<int>(shape.extent(0)), static_cast<int>(shape.extent(1)), CV_8UC1);
+  for(auto i = 0u; i != shape.extent(0); ++i) {
+    for(auto j = 0u; j != shape.extent(1); ++j) {
+      img.at<uchar>(static_cast<int>(i), static_cast<int>(j)) = grid(i, j);
+    }
+  }
+  cv::imwrite(filename, img);
+}
 
+std::ostream& operator<<(std::ostream& os, std::mdspan<unsigned char, std::dextents<std::size_t, 2>, layout_rotatable> const& occ) {
+    for (auto i = 0u; i != occ.extent(0); i++) {
+      for (auto j = 0u; j != occ.extent(1); j++) {
+        auto const value = occ(i, j);
+        // Map value from 0-255 to grayscale range 232-255
+        int const grayscale_value = 232 + (value * 24 / 256);
+        std::cout << "\033[48;5;" << grayscale_value << "m  \033[0m";  // Print a grayscale block
+      }
+      os << "\n";
+    }
+    return os;
+  }
 [[nodiscard]] tl::expected<occupancy_grid_t, std::string> load_occupancy_grid(
     std::filesystem::path const& filename) {
   if (!std::filesystem::exists(filename)) {
@@ -750,6 +773,7 @@ void save_occupancy_grid(std::filesystem::path const& filename, occupancy_grid_t
 
 int main(int /* argc */, char** /* argv[] */) {
   // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 1>{20, 30}, 0};
+  // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{80, 120}, 127};
   auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{40, 60}, 127};
   // auto global_map = occupancy_grid_t{std::dextents<std::size_t, 2>{768, 1024}, 127};
   auto map_maybe = load_occupancy_grid("/home/griswald/ws/occupancy_grid.png");
@@ -758,48 +782,57 @@ int main(int /* argc */, char** /* argv[] */) {
   } else {
     global_map = map_maybe.value();
   }
-
   // std::cout << global_map << "\n";
   // This one doesn't work. Show this as the negative example (both layout_right
   // and layout_left)
   auto window_bad =
-      global_map.window_from_layout_right(std::dextents<std::size_t, 2>{5, 4}, {10, 15});
-  set(window_bad, 100);
-  set(window_bad, 120);
+      global_map.window_from_layout_right(std::dextents<std::size_t, 2>{10, 10}, {10, 15});
+  set(window_bad, 255);
+  set(window_bad, 127);
+  // std::cout << global_map << std::endl;
+  // save_occupancy_grid("layout_right.png", global_map);
+
   // This works and uses layout_stride.
   // Show how this can also do multistride
   // Note the slide from Bryce Lelbach and the data[i * M + j] vs data[i * X + j
   // * Y] This doesn't feel quite right and need to explain why layout_left !=
   // layout_stride for this simple case
   auto window_good =
-      global_map.window_from_layout_stride(std::dextents<std::size_t, 2>{4, 4}, {20, 1});
-  set(window_good, 200);
-  set(window_good, 127);
+      global_map.window_from_layout_stride(std::dextents<std::size_t, 2>{10, 10}, {10, 15});
+  set(window_good, 255);
+  set(window_bad, 127);
   // std::cout << global_map << "\n";
+  // save_occupancy_grid("layout_stride.png", global_map);
   // But for the local costmap example, using submdspan is even easier and
   // simpler to grok not needing to mess with pointer offsets
-  auto local_map = global_map.window_submdspan(std::dextents<std::size_t, 2>{4, 4}, {10, 5});
-  set(local_map, 3);
+  auto local_map = global_map.window_submdspan(std::dextents<std::size_t, 2>{10, 10}, {10, 15});
+  set(local_map, 255);
   set(local_map, 127);
+  // std::cout << global_map << "\n";
+  // save_occupancy_grid("layout_submdspan.png", global_map);
+  
+  // auto rotatable = global_map.window_rotatable(std::dextents<std::size_t, 2>{50, 50}, {2, 44}, geometry::degrees_to_radians(-45));
+  // set(rotatable, 0);
+  // set(rotatable, 127);
+  // std::cout << rotatable << "\n";
+  // std::cout << global_map << "\n";
+  // save_occupancy_grid("layout_rotated.png", rotatable);
+  // save_occupancy_grid("global_map.png", global_map);
 
   // Character to display that changes every loop
   // create footprint
   // rotates around upper left corner
   // std::vector<geometry::Cell> const vertices = {{0, 0}, {3, 0}, {3, 3}, {0, 3}};
   // rotates somewhere around center
+  int x = 0;
   std::vector<geometry::Cell> vertices = {{-8, -8}, {8, -8}, {8, 0}, {2, 10}, {-2, 10}, {-8, 0}};
-  geometry::Cell const p = {30, 20};
   for (auto const& angle : {0, 12, 22, 30, 45, 58, 67, 79, 90}) {
     double const theta = geometry::degrees_to_radians(angle);
-
+    geometry::Cell const p = {30 + ++x, 20 - ++x};
     auto footprint = global_map.window_polygonal(vertices, p, theta);
-    std::cout << "footprint is_occupied = " << is_occupied(footprint) << "\n";
+    // std::cout << "footprint is_occupied = " << is_occupied(footprint) << "\n";
     set(footprint, 0);
-    std::cout << "footprint is_occupied = " << is_occupied(footprint) << "\n";
-
-    auto rotatable =
-        global_map.window_rotatable(std::dextents<std::size_t, 2>{4, 4}, {10, 10}, theta);
-    set(rotatable, 255);
+    // std::cout << "footprint is_occupied = " << is_occupied(footprint) << "\n";
 
     // What's interesting is that if you try to use
     // std::fill(window.data_handle(), window.data_handle() + offset, 1);
@@ -811,18 +844,17 @@ int main(int /* argc */, char** /* argv[] */) {
     //
     // print map
     std::cout << global_map << std::endl;
+  save_occupancy_grid(std::to_string(x) + ".png", global_map);
     // Clear footprint
     set(footprint, 127);
-    // Clear footprint
-    set(rotatable, 127);
-    std::cin.get();
+    // std::cin.get();
   }
 
   std::vector<geometry::Cell> laser_scan;
   for (auto const& degree : std::views::iota(-135, 135)) {
     // for (auto const& degree : std::views::iota(-10, 10)) {
     double const theta = geometry::degrees_to_radians(degree);
-    double const range = 20.;
+    double const range = 30.;
     // double const range = 300.;
     laser_scan.emplace_back(static_cast<int>(range * std::cos(theta)),
                             static_cast<int>(range * std::sin(theta)));
@@ -832,9 +864,7 @@ int main(int /* argc */, char** /* argv[] */) {
   // auto const center = geometry::Cell{500, 300};
   double const orientation = 2.;
   set_scan(global_map, laser_scan, center, orientation);
-  std::cout << global_map << std::endl;
-  std::cout << local_map.is_exhaustive() << std::endl;
-  std::cout << local_map.is_strided() << std::endl;
-  // save_occupancy_grid("occupancy_grid.png", global_map);
+  // std::cout << global_map << std::endl;
+  // save_occupancy_grid("occupancy_grid_lidar.png", global_map);
   return 0;
 }
