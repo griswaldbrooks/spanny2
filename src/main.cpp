@@ -878,14 +878,15 @@ int main() {
   /* TEST SINGLE ARM SYNCHRONOUS */
   {
       // auto arbiter = arbiter_single{left_arm, std::make_unique<mock_hardware>(left_arm)};
-      // auto arbiter = arbiter_single{right_arm, std::make_unique<hardware>("/dev/ttyACM0", 9600)};
-      // auto bin_checker = bin_checker_t{&arbiter};
-      // auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
-      // for (auto i = 0u; i != bins.extent(0); ++i) {
-      //   for (auto j = 0u; j != bins.extent(1); ++j) {
-      //     std::cout << bins(i, j) << "\n";
+      //   auto arbiter = arbiter_single{left_arm, std::make_unique<hardware>("/dev/ttyACM0",
+      //   9600)}; auto bin_checker = bin_checker_t{&arbiter}; auto bins =
+      //   bin_view_t(bin_positions.data(), {}, bin_checker); for (auto i = 0u; i != bins.extent(0);
+      //   ++i) {
+      //     for (auto j = 0u; j != bins.extent(1); ++j) {
+      //       std::cout << bins(i, j) << "\n";
+      //     }
       //   }
-      // }
+      // return 0;
   }  // auto hw = hardware("/dev/ttyACM0", 9600);
   // hw({joint_angles{std::numbers::pi / 2., 0.}});
   // return 0;
@@ -931,7 +932,7 @@ int main() {
   {
     // auto arbiter = arbiter_dual{left_arm, std::make_unique<hardware>("/dev/ttyACM0", 9600),
     // right_arm,
-    //                             std::make_unique<mock_hardware>(right_arm)};
+    //                             std::make_unique<hardware>("/dev/ttyACM1", 9600)};
     // auto bin_checker = bin_checker_t{&arbiter};
     // auto bins = bin_view_t(bin_positions.data(), {}, bin_checker);
     // for (auto i = 0u; i != bins.extent(0); ++i) {
@@ -950,9 +951,9 @@ int main() {
   };
 
   auto hilbert_view = hilbert_view_t{hilbert_function};
-  assert(1./5. == hilbert_view(2, 2));
-  std::cout << hilbert_view(2, 2) << std::endl;
-  return 0;
+  assert(1. / 5. == hilbert_view(2, 2));
+  // std::cout << hilbert_view(2, 2) << std::endl;
+  // return 0;
   /* TEST DUAL ARM ASYNCHRONOUS */
   {
     // auto left_arm = std::make_unique<hardware>("/dev/ttyACM0", 9600);

@@ -732,30 +732,34 @@ void save_occupancy_grid(std::filesystem::path const& filename, occupancy_grid_t
 
   cv::imwrite(filename, img);
 }
-void save_occupancy_grid(std::filesystem::path const& filename, std::mdspan<unsigned char, std::dextents<std::size_t, 2>, layout_rotatable> grid) {
+void save_occupancy_grid(
+    std::filesystem::path const& filename,
+    std::mdspan<unsigned char, std::dextents<std::size_t, 2>, layout_rotatable> grid) {
   auto const shape = grid.extents();
   // Create a 8-bit unsigned single-channel grayscale cv::Mat
   cv::Mat img(static_cast<int>(shape.extent(0)), static_cast<int>(shape.extent(1)), CV_8UC1);
-  for(auto i = 0u; i != shape.extent(0); ++i) {
-    for(auto j = 0u; j != shape.extent(1); ++j) {
+  for (auto i = 0u; i != shape.extent(0); ++i) {
+    for (auto j = 0u; j != shape.extent(1); ++j) {
       img.at<uchar>(static_cast<int>(i), static_cast<int>(j)) = grid(i, j);
     }
   }
   cv::imwrite(filename, img);
 }
 
-std::ostream& operator<<(std::ostream& os, std::mdspan<unsigned char, std::dextents<std::size_t, 2>, layout_rotatable> const& occ) {
-    for (auto i = 0u; i != occ.extent(0); i++) {
-      for (auto j = 0u; j != occ.extent(1); j++) {
-        auto const value = occ(i, j);
-        // Map value from 0-255 to grayscale range 232-255
-        int const grayscale_value = 232 + (value * 24 / 256);
-        std::cout << "\033[48;5;" << grayscale_value << "m  \033[0m";  // Print a grayscale block
-      }
-      os << "\n";
+std::ostream& operator<<(
+    std::ostream& os,
+    std::mdspan<unsigned char, std::dextents<std::size_t, 2>, layout_rotatable> const& occ) {
+  for (auto i = 0u; i != occ.extent(0); i++) {
+    for (auto j = 0u; j != occ.extent(1); j++) {
+      auto const value = occ(i, j);
+      // Map value from 0-255 to grayscale range 232-255
+      int const grayscale_value = 232 + (value * 24 / 256);
+      std::cout << "\033[48;5;" << grayscale_value << "m  \033[0m";  // Print a grayscale block
     }
-    return os;
+    os << "\n";
   }
+  return os;
+}
 [[nodiscard]] tl::expected<occupancy_grid_t, std::string> load_occupancy_grid(
     std::filesystem::path const& filename) {
   if (!std::filesystem::exists(filename)) {
@@ -810,14 +814,11 @@ int main(int /* argc */, char** /* argv[] */) {
   set(local_map, 127);
   // std::cout << global_map << "\n";
   // save_occupancy_grid("layout_submdspan.png", global_map);
-  
-  // auto rotatable = global_map.window_rotatable(std::dextents<std::size_t, 2>{50, 50}, {2, 44}, geometry::degrees_to_radians(-45));
-  // set(rotatable, 0);
-  // set(rotatable, 127);
-  // std::cout << rotatable << "\n";
-  // std::cout << global_map << "\n";
-  // save_occupancy_grid("layout_rotated.png", rotatable);
-  // save_occupancy_grid("global_map.png", global_map);
+
+  // auto rotatable = global_map.window_rotatable(std::dextents<std::size_t, 2>{50, 50}, {2, 44},
+  // geometry::degrees_to_radians(-45)); set(rotatable, 0); set(rotatable, 127); std::cout <<
+  // rotatable << "\n"; std::cout << global_map << "\n"; save_occupancy_grid("layout_rotated.png",
+  // rotatable); save_occupancy_grid("global_map.png", global_map);
 
   // Character to display that changes every loop
   // create footprint
@@ -844,7 +845,7 @@ int main(int /* argc */, char** /* argv[] */) {
     //
     // print map
     std::cout << global_map << std::endl;
-  save_occupancy_grid(std::to_string(x) + ".png", global_map);
+    save_occupancy_grid(std::to_string(x) + ".png", global_map);
     // Clear footprint
     set(footprint, 127);
     // std::cin.get();
