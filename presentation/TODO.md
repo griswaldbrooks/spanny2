@@ -25,6 +25,7 @@ Try to write more constexpr and compile time code
 Don't return an mdspan
 frameless torque motors
 simplefoc
+need automatic joint calibration routine, even with magnetic position encoders
 index of mdspan representing a state, returning a set of next states
 what would happen if you extended mdspan to accept an std::dextents<double, 3> (doesn't compile)
 
