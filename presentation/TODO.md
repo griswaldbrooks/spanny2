@@ -8,6 +8,7 @@
 - [ ] Add unit tests
 - [ ] Make youtube videos
     - [ ] ie, make 5 minute videos on each of the examples and pieces of the talk
+- [ ] Add include what you use
 
 ## mdspan examples
 - [ ] Molton/zed curve

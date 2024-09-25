@@ -7,6 +7,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
   add_compile_options(-Werror -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
 endif()
 
+add_library(geometry INTERFACE)
+add_library(spanny::geometry ALIAS geometry)
+target_include_directories(geometry INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+target_compile_features(geometry INTERFACE cxx_std_20)
+
 add_library(json INTERFACE)
 add_library(nlohmann::json ALIAS json)
 target_include_directories(json INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/nlohmann>)
@@ -24,10 +29,16 @@ find_package(OpenCV REQUIRED)
 add_executable(mappy
   src/map.cpp
 )
-target_link_libraries(mappy PRIVATE serial mdspan expected ${OpenCV_LIBS})
+target_link_libraries(mappy PRIVATE spanny::geometry serial mdspan expected ${OpenCV_LIBS})
 target_include_directories(mappy INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_compile_features(mappy INTERFACE cxx_std_20)
 
 if(NOT PROJECT_IS_TOP_LEVEL)
   return()
 endif()
+
+include(CTest)
+if(BUILD_TESTING)
+  add_subdirectory(test)
+endif()
+
